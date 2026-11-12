@@ -1,0 +1,39 @@
+---
+description: FireRouter product, stack, and working rules
+alwaysApply: true
+---
+
+# FireRouter
+
+An open-source, low-latency streaming proxy that sits in front of Fireworks AI's
+OpenAI-compatible API (https://api.fireworks.ai/inference/v1/chat/completions).
+Apps send requests to FireRouter instead of Fireworks directly.
+
+## Eventual features (NOT all to be built now; we build in small steps)
+- Streaming SSE passthrough with no buffering (tokens forwarded the instant they arrive)
+- Per-tenant rate limiting (requests/min and tokens/min, token-bucket algorithm)
+- Circuit breaker per upstream model with automatic fallback to a backup model
+- Tuned HTTP/2 connection pooling to the upstream
+- Prometheus metrics, including time-to-first-token (TTFT) and proxy overhead
+- Benchmark tooling: a mock upstream and a streaming-aware load generator
+
+## Stack and rules
+- Go 1.22+. Standard library first. Ask before adding any dependency.
+- Layout: cmd/<binary>/main.go for executables, internal/<pkg> for libraries.
+- NEVER buffer an SSE response. Forward each chunk and Flush() immediately.
+  Never use io.ReadAll or bufio.Scanner on the response stream path.
+- Always propagate request context to upstream calls (client disconnect must
+  cancel the upstream request).
+- Never log prompts or API keys. Never hardcode keys; read from environment.
+- Share one http.Transport per process. Never create a client per request.
+- Inject time (a `now` parameter or clock interface) in anything time-dependent
+  so it is testable.
+- Every package gets tests. Run `go vet ./... && go test -race ./...` before
+  saying a task is done.
+- Keep functions small. Comment WHY, not what. The author is new to Go, so
+  prefer clear code over clever code.
+
+## Working style
+- Do exactly what the current prompt asks. Do not build ahead.
+- If a requirement is ambiguous, ask before guessing.
+- After finishing, summarize what you changed and how to run it.
