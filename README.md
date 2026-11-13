@@ -14,7 +14,7 @@ make build
 
 ### Mock upstream
 
-In one terminal, start the fake Fireworks server:
+In one terminal, start the makeshift Fireworks server:
 
 ```bash
 ./bin/mockupstream
