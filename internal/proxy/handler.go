@@ -28,11 +28,15 @@ var copyBufPool = sync.Pool{
 type Handler struct {
 	upstream *url.URL
 	client   *http.Client
+	// apiKey is the gateway secret. When set, it replaces any client
+	// Authorization header so apps never hold the upstream key.
+	apiKey string
 }
 
 // NewHandler parses the upstream base URL. client is the shared client from
-// startup; a nil client uses NewClient.
-func NewHandler(upstream string, client *http.Client) (*Handler, error) {
+// startup; a nil client uses NewClient. apiKey comes from FIREWORKS_API_KEY
+// and may be empty.
+func NewHandler(upstream string, client *http.Client, apiKey string) (*Handler, error) {
 	u, err := url.Parse(upstream)
 	if err != nil {
 		return nil, err
@@ -43,7 +47,7 @@ func NewHandler(upstream string, client *http.Client) (*Handler, error) {
 	if client == nil {
 		client = NewClient()
 	}
-	return &Handler{upstream: u, client: client}, nil
+	return &Handler{upstream: u, client: client, apiKey: apiKey}, nil
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -62,17 +66,19 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	upstreamURL := *h.upstream
-	upstreamURL.Path = r.URL.Path
-	upstreamURL.RawQuery = r.URL.RawQuery
-	// The incoming context is cancelled when the client disconnects, which
-	// cancels this upstream call so a closed tab stops the paid request.
-	upReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, upstreamURL.String(), bytes.NewReader(body))
+	target, err := h.upstreamRequestURL(r)
 	if err != nil {
 		writeOpenAIError(w, http.StatusBadGateway, "The upstream request failed.", "server_error")
 		return
 	}
-	copyRequestHeaders(upReq.Header, r.Header)
+	// The incoming context is cancelled when the client disconnects, which
+	// cancels this upstream call so a closed tab stops the paid request.
+	upReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, target, bytes.NewReader(body))
+	if err != nil {
+		writeOpenAIError(w, http.StatusBadGateway, "The upstream request failed.", "server_error")
+		return
+	}
+	h.copyRequestHeaders(upReq.Header, r.Header)
 	upReq.ContentLength = int64(len(body))
 
 	resp, err := h.client.Do(upReq)
@@ -106,14 +112,39 @@ func readRequestBody(w http.ResponseWriter, r *http.Request) ([]byte, error) {
 	return io.ReadAll(http.MaxBytesReader(w, r.Body, maxRequestBody))
 }
 
+// upstreamRequestURL appends the request path to the configured base.
+// Replacing URL.Path would drop a prefix such as /inference, so
+// https://api.fireworks.ai/inference/v1/chat/completions would be wrong.
+func (h *Handler) upstreamRequestURL(r *http.Request) (string, error) {
+	joined, err := url.JoinPath(h.upstream.String(), r.URL.EscapedPath())
+	if err != nil {
+		return "", err
+	}
+	u, err := url.Parse(joined)
+	if err != nil {
+		return "", err
+	}
+	u.RawQuery = r.URL.RawQuery
+	return u.String(), nil
+}
+
 // copyRequestHeaders forwards the headers the upstream needs and leaves out
 // hop-by-hop headers (Connection, Keep-Alive, Transfer-Encoding, Upgrade),
 // which describe this connection rather than the chat request.
-func copyRequestHeaders(dst, src http.Header) {
-	for _, name := range []string{"Content-Type", "Accept", "Authorization"} {
+// The gateway key, when configured, replaces the client Authorization header.
+// The key itself is never logged.
+func (h *Handler) copyRequestHeaders(dst, src http.Header) {
+	for _, name := range []string{"Content-Type", "Accept"} {
 		if v := src.Get(name); v != "" {
 			dst.Set(name, v)
 		}
+	}
+	if h.apiKey != "" {
+		dst.Set("Authorization", "Bearer "+h.apiKey)
+		return
+	}
+	if v := src.Get("Authorization"); v != "" {
+		dst.Set("Authorization", v)
 	}
 }
 
