@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -149,9 +150,77 @@ func TestBodyAndAuthorizationPassThrough(t *testing.T) {
 	}
 }
 
+func TestUpstreamURLKeepsPathPrefix(t *testing.T) {
+	h, err := NewHandler("https://api.fireworks.ai/inference", nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := h.upstreamRequestURL(&http.Request{URL: &url.URL{Path: "/v1/chat/completions"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = "https://api.fireworks.ai/inference/v1/chat/completions"
+	if got != want {
+		t.Fatalf("url = %s, want %s", got, want)
+	}
+
+	local, err := NewHandler("http://localhost:9000", nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err = local.upstreamRequestURL(&http.Request{URL: &url.URL{Path: "/v1/chat/completions", RawQuery: "x=1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const localWant = "http://localhost:9000/v1/chat/completions?x=1"
+	if got != localWant {
+		t.Fatalf("url = %s, want %s", got, localWant)
+	}
+}
+
+func TestGatewayKeyReplacesClientAuthorization(t *testing.T) {
+	const gatewayKey = "gateway-secret"
+	saw := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer close(saw)
+		if got := r.URL.Path; got != "/inference/v1/chat/completions" {
+			t.Errorf("path = %s, want /inference/v1/chat/completions", got)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer "+gatewayKey {
+			t.Errorf("Authorization was not the gateway key")
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	h, err := NewHandler(upstream.URL+"/inference", NewClient(), gatewayKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxy := httptest.NewServer(h)
+	defer proxy.Close()
+
+	req, err := http.NewRequest(http.MethodPost, proxy.URL+"/v1/chat/completions", strings.NewReader(`{"model":"m"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer client-secret")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	select {
+	case <-saw:
+	case <-time.After(time.Second):
+		t.Fatal("upstream did not receive the request")
+	}
+}
+
 func newTestProxy(t *testing.T, upstream string) *httptest.Server {
 	t.Helper()
-	h, err := NewHandler(upstream, NewClient())
+	h, err := NewHandler(upstream, NewClient(), "")
 	if err != nil {
 		t.Fatal(err)
 	}

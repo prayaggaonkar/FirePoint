@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -19,7 +20,10 @@ func main() {
 	upstream := flag.String("upstream", envOr("FIREROUTER_UPSTREAM", "http://localhost:9000"), "upstream base URL")
 	flag.Parse()
 
-	handler, err := proxy.NewHandler(*upstream, proxy.NewClient())
+	// Trim so a trailing newline in the env value does not become part of the key.
+	// The value is never written to the log.
+	apiKey := strings.TrimSpace(os.Getenv("FIREWORKS_API_KEY"))
+	handler, err := proxy.NewHandler(*upstream, proxy.NewClient(), apiKey)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -42,7 +46,11 @@ func main() {
 
 	errCh := make(chan error, 1)
 	go func() {
-		log.Printf("listening on %s, upstream %s", *listen, *upstream)
+		if apiKey != "" {
+			log.Printf("listening on %s, upstream %s, using FIREWORKS_API_KEY", *listen, *upstream)
+		} else {
+			log.Printf("listening on %s, upstream %s", *listen, *upstream)
+		}
 		errCh <- srv.ListenAndServe()
 	}()
 
