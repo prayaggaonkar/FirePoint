@@ -2,14 +2,20 @@ package proxy
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/prayaggaonkar/firerouter/internal/ratelimit"
 )
 
 func TestChunksArriveAbout100msApart(t *testing.T) {
@@ -216,6 +222,150 @@ func TestGatewayKeyReplacesClientAuthorization(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("upstream did not receive the request")
 	}
+}
+
+func TestRequestsOverLimitReturn429(t *testing.T) {
+	var hits atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"ok":true}`)
+	}))
+	defer upstream.Close()
+
+	h, err := NewHandler(upstream.URL, NewClient(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const limit = 3
+	h.SetLimiter(limit, 200000)
+	proxy := httptest.NewServer(h)
+	defer proxy.Close()
+
+	for i := 0; i < limit; i++ {
+		resp := postChat(t, proxy.URL, "Bearer tenant-a", `{"model":"m"}`)
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			t.Fatalf("request %d status %d body %s", i+1, resp.StatusCode, body)
+		}
+		resp.Body.Close()
+	}
+
+	resp := postChat(t, proxy.URL, "Bearer tenant-a", `{"model":"m"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("status %d, want 429", resp.StatusCode)
+	}
+	secs, err := strconv.Atoi(resp.Header.Get("Retry-After"))
+	if err != nil || secs <= 0 {
+		t.Fatalf("Retry-After = %q", resp.Header.Get("Retry-After"))
+	}
+	var apiErr struct {
+		Error struct {
+			Type    string `json:"type"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&apiErr); err != nil {
+		t.Fatal(err)
+	}
+	if apiErr.Error.Type != "rate_limit_exceeded" {
+		t.Fatalf("error type %q", apiErr.Error.Type)
+	}
+	if strings.Contains(apiErr.Error.Message, "Bearer") || strings.Contains(apiErr.Error.Message, "tenant-a") {
+		t.Fatal("rate limit error included the client credential")
+	}
+	if got := hits.Load(); got != limit {
+		t.Fatalf("upstream hits %d, want %d", got, limit)
+	}
+
+	other := postChat(t, proxy.URL, "Bearer tenant-b", `{"model":"m"}`)
+	defer other.Body.Close()
+	if other.StatusCode != http.StatusOK {
+		t.Fatalf("other tenant status %d, want 200", other.StatusCode)
+	}
+}
+
+func TestUsageRefundLetsAnotherRequestThrough(t *testing.T) {
+	body := `{"messages":[{"content":"hi"}],"max_tokens":100}`
+	reserved := ratelimit.EstimateTokens([]byte(body))
+	const actual = 10
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher := http.NewResponseController(w)
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"a\"}}]}\n\n")
+		_ = flusher.Flush()
+		_, _ = io.WriteString(w, "data: {\"usage\":{\"prompt_tokens\":8,\"completion_tokens\":2,\"total_tokens\":10}}\n\n")
+		_ = flusher.Flush()
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+		_ = flusher.Flush()
+	}))
+	defer upstream.Close()
+
+	h, err := NewHandler(upstream.URL, NewClient(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// One full reservation plus the tokens that should come back as a refund.
+	// A second call fits only if reserved-actual was returned.
+	h.SetLimiter(10, reserved+actual)
+	proxy := httptest.NewServer(h)
+	defer proxy.Close()
+
+	first := postChat(t, proxy.URL, "Bearer tenant-a", body)
+	io.Copy(io.Discard, first.Body)
+	first.Body.Close()
+	if first.StatusCode != http.StatusOK {
+		t.Fatalf("first status %d", first.StatusCode)
+	}
+
+	second := postChat(t, proxy.URL, "Bearer tenant-a", body)
+	io.Copy(io.Discard, second.Body)
+	second.Body.Close()
+	if second.StatusCode != http.StatusOK {
+		t.Fatalf("second status %d, want 200 after refund", second.StatusCode)
+	}
+
+	third := postChat(t, proxy.URL, "Bearer tenant-a", body)
+	defer third.Body.Close()
+	if third.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("third status %d, want 429", third.StatusCode)
+	}
+}
+
+func TestActualTokensUsesTheTail(t *testing.T) {
+	var tail tailBuf
+	tail.write([]byte(`{"usage":{"total_tokens":1}}`))
+	tail.write(bytes.Repeat([]byte("x"), usageTailBytes))
+	if _, ok := actualTokens(tail.bytes()); ok {
+		t.Fatal("usage older than 4KB was still visible")
+	}
+	tail.write([]byte("data: {\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":4}}\n\n"))
+	got, ok := actualTokens(tail.bytes())
+	if !ok || got != 7 {
+		t.Fatalf("actual = %d ok=%v, want 7", got, ok)
+	}
+}
+
+func postChat(t *testing.T, serverURL, auth, body string) *http.Response {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, serverURL+"/v1/chat/completions", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if auth != "" {
+		req.Header.Set("Authorization", auth)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resp
 }
 
 func newTestProxy(t *testing.T, upstream string) *httptest.Server {

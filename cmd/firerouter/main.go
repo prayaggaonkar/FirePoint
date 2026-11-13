@@ -18,6 +18,8 @@ import (
 func main() {
 	listen := flag.String("listen", envOr("FIREROUTER_LISTEN", ":8080"), "listen address")
 	upstream := flag.String("upstream", envOr("FIREROUTER_UPSTREAM", "http://localhost:9000"), "upstream base URL")
+	rpm := flag.Int("rpm", 600, "requests per minute for one client")
+	tpm := flag.Int("tpm", 200000, "tokens per minute for one client")
 	flag.Parse()
 
 	// Trim so a trailing newline in the env value does not become part of the key.
@@ -27,6 +29,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	handler.SetLimiter(*rpm, *tpm)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -47,9 +50,9 @@ func main() {
 	errCh := make(chan error, 1)
 	go func() {
 		if apiKey != "" {
-			log.Printf("listening on %s, upstream %s, using FIREWORKS_API_KEY", *listen, *upstream)
+			log.Printf("listening on %s, upstream %s, rpm %d, tpm %d, using FIREWORKS_API_KEY", *listen, *upstream, *rpm, *tpm)
 		} else {
-			log.Printf("listening on %s, upstream %s", *listen, *upstream)
+			log.Printf("listening on %s, upstream %s, rpm %d, tpm %d", *listen, *upstream, *rpm, *tpm)
 		}
 		errCh <- srv.ListenAndServe()
 	}()

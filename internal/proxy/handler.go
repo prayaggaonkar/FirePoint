@@ -3,14 +3,20 @@ package proxy
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
 	"log"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
+
+	"github.com/prayaggaonkar/firerouter/internal/ratelimit"
 )
 
 const maxRequestBody = 1 << 20 // 1 MB
@@ -31,6 +37,9 @@ type Handler struct {
 	// apiKey is the gateway secret. When set, it replaces any client
 	// Authorization header so apps never hold the upstream key.
 	apiKey string
+	// limiter is per client. It stays nil in tests that are not checking
+	// quotas. The process always sets one before serving traffic.
+	limiter *ratelimit.Limiter
 }
 
 // NewHandler parses the upstream base URL. client is the shared client from
@@ -50,6 +59,12 @@ func NewHandler(upstream string, client *http.Client, apiKey string) (*Handler, 
 	return &Handler{upstream: u, client: client, apiKey: apiKey}, nil
 }
 
+// SetLimiter turns on per-client limits. requestsPerMinute and tokensPerMinute
+// are the burst and the sustained rate for one Authorization value.
+func (h *Handler) SetLimiter(requestsPerMinute, tokensPerMinute int) {
+	h.limiter = ratelimit.NewLimiter(requestsPerMinute, tokensPerMinute)
+}
+
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
@@ -66,8 +81,22 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The raw credential is the tenant id. Only its hash is kept, so a limit
+	// bucket cannot be turned back into a key and nothing here is logged.
+	tenant := tenantID(r.Header.Get("Authorization"))
+	reserved := 0
+	if h.limiter != nil {
+		reserved = ratelimit.EstimateTokens(body)
+		ok, retryAfter := h.limiter.Allow(tenant, reserved, time.Now())
+		if !ok {
+			writeRateLimited(w, retryAfter)
+			return
+		}
+	}
+
 	target, err := h.upstreamRequestURL(r)
 	if err != nil {
+		h.refundTokens(tenant, reserved)
 		writeOpenAIError(w, http.StatusBadGateway, "The upstream request failed.", "server_error")
 		return
 	}
@@ -75,6 +104,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// cancels this upstream call so a closed tab stops the paid request.
 	upReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, target, bytes.NewReader(body))
 	if err != nil {
+		h.refundTokens(tenant, reserved)
 		writeOpenAIError(w, http.StatusBadGateway, "The upstream request failed.", "server_error")
 		return
 	}
@@ -87,6 +117,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		log.Printf("upstream request failed: %v", err)
+		// The model never ran, so the reservation should not keep blocking later calls.
+		h.refundTokens(tenant, reserved)
 		writeOpenAIError(w, http.StatusBadGateway, "The upstream request failed.", "server_error")
 		return
 	}
@@ -101,8 +133,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(resp.StatusCode)
 
-	if err := streamBody(w, resp.Body); err != nil && r.Context().Err() == nil && !errors.Is(err, context.Canceled) {
+	tail, err := streamBody(w, resp.Body)
+	if err != nil && r.Context().Err() == nil && !errors.Is(err, context.Canceled) {
 		log.Printf("streaming response: %v", err)
+	}
+	if actual, ok := actualTokens(tail); ok {
+		h.refundTokens(tenant, reserved-actual)
 	}
 }
 
@@ -155,27 +191,58 @@ func isEventStream(contentType string) bool {
 // streamBody copies upstream bytes to the client one read at a time. Flush
 // pushes those bytes onto the network immediately; without it the server
 // waits to fill a buffer and the user sees the whole answer at once.
-func streamBody(dst http.ResponseWriter, src io.Reader) error {
+// The returned tail is only the last 4 KB, which is where the usage object sits.
+func streamBody(dst http.ResponseWriter, src io.Reader) ([]byte, error) {
 	buf := copyBufPool.Get().([]byte)
 	defer copyBufPool.Put(buf)
+	var tail tailBuf
 
 	for {
 		n, rerr := src.Read(buf)
 		if n > 0 {
 			if _, werr := dst.Write(buf[:n]); werr != nil {
-				return werr
+				return tail.bytes(), werr
 			}
 			if ferr := http.NewResponseController(dst).Flush(); ferr != nil {
-				return ferr
+				return tail.bytes(), ferr
 			}
+			tail.write(buf[:n])
 		}
 		if rerr == io.EOF {
-			return nil
+			return tail.bytes(), nil
 		}
 		if rerr != nil {
-			return rerr
+			return tail.bytes(), rerr
 		}
 	}
+}
+
+func (h *Handler) refundTokens(tenant string, tokens int) {
+	if h.limiter == nil || tokens <= 0 {
+		return
+	}
+	h.limiter.Refund(tenant, tokens)
+}
+
+func tenantID(authorization string) string {
+	sum := sha256.Sum256([]byte(authorization))
+	return hex.EncodeToString(sum[:])
+}
+
+func writeRateLimited(w http.ResponseWriter, retryAfter time.Duration) {
+	w.Header().Set("Retry-After", strconv.Itoa(retryAfterSeconds(retryAfter)))
+	writeOpenAIError(w, http.StatusTooManyRequests, "Rate limit exceeded.", "rate_limit_exceeded")
+}
+
+func retryAfterSeconds(d time.Duration) int {
+	if d <= 0 {
+		return 0
+	}
+	secs := int(d / time.Second)
+	if d%time.Second != 0 {
+		secs++
+	}
+	return secs
 }
 
 type apiError struct {
