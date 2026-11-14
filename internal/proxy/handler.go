@@ -47,8 +47,11 @@ type Handler struct {
 	limiter *ratelimit.Limiter
 	// router lists fallbacks. Nil means the requested model is the only try.
 	router *router.Router
-	// breakers is one circuit per model. Nil skips the check.
+	// breakers is one circuit per model. Nil falls through to breaker.
 	breakers *breaker.Registry
+	// breaker is one circuit for every model. Tests that are not about
+	// fallback use it. Nil skips the check.
+	breaker *breaker.Breaker
 }
 
 // NewHandler parses the upstream base URL. client is the shared client from
@@ -65,12 +68,7 @@ func NewHandler(upstream string, client *http.Client, apiKey string) (*Handler, 
 	if client == nil {
 		client = NewClient()
 	}
-	return &Handler{
-		upstream: u,
-		client:   client,
-		apiKey:   apiKey,
-		breakers: breaker.NewRegistry(breaker.DefaultConfig()),
-	}, nil
+	return &Handler{upstream: u, client: client, apiKey: apiKey}, nil
 }
 
 // SetRouter installs the fallback list. A nil router tries only the model
@@ -89,6 +87,11 @@ func (h *Handler) SetBreakers(reg *breaker.Registry) {
 // are the burst and the sustained rate for one Authorization value.
 func (h *Handler) SetLimiter(requestsPerMinute, tokensPerMinute int) {
 	h.limiter = ratelimit.NewLimiter(requestsPerMinute, tokensPerMinute)
+}
+
+// SetBreaker installs the upstream circuit breaker.
+func (h *Handler) SetBreaker(b *breaker.Breaker) {
+	h.breaker = b
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -128,49 +131,70 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Try each candidate until one answers with headers. A later failure
 	// cannot switch models: the client may already be reading the body.
+	sawFailure := false
 	for _, model := range h.candidates(requested) {
-		tryNext := h.attempt(w, r, tenant, reserved, model, body)
-		if !tryNext {
+		switch h.attempt(w, r, tenant, reserved, model, body) {
+		case attemptDone:
 			return
+		case attemptFailed:
+			sawFailure = true
 		}
 	}
 	h.refundTokens(tenant, reserved)
 	if r.Context().Err() != nil {
 		return
 	}
-	writeOpenAIError(w, http.StatusServiceUnavailable, "No upstream model is available.", "server_error")
+	// An open breaker never reached an upstream. A failed dial or a 5xx did.
+	message := "The upstream is unavailable."
+	if sawFailure {
+		message = "No upstream model is available."
+	}
+	writeOpenAIError(w, http.StatusServiceUnavailable, message, "server_error")
 }
 
-// attempt sends one candidate. It returns true when the caller should try
-// the next model, and false when the response is finished or the client left.
-func (h *Handler) attempt(w http.ResponseWriter, r *http.Request, tenant string, reserved int, model string, body []byte) (tryNext bool) {
+type attemptResult int
+
+const (
+	// attemptDone means the client already has a response, or the client left.
+	attemptDone attemptResult = iota
+	// attemptFailed means this model did not answer before headers.
+	attemptFailed
+	// attemptSkipped means the breaker was open, so this model was not called.
+	attemptSkipped
+)
+
+// attempt sends one candidate. Headers are the commit point: a 5xx or a dial
+// error can still try the next model, and anything else is streamed as-is.
+func (h *Handler) attempt(w http.ResponseWriter, r *http.Request, tenant string, reserved int, model string, body []byte) attemptResult {
 	report, err := h.allow(model)
 	if err != nil {
+		// Ask before dialing. An open breaker fails in this process instead of
+		// making the client wait out an upstream timeout.
 		log.Printf("model %s skipped: circuit breaker open", model)
-		return true
+		return attemptSkipped
 	}
 	payload, err := bodyForModel(body, model)
 	if err != nil {
-		report.Skip()
+		report(breaker.Ignored)
 		h.refundTokens(tenant, reserved)
 		writeOpenAIError(w, http.StatusBadRequest, "invalid request body", "invalid_request_error")
-		return false
+		return attemptDone
 	}
 	target, err := h.upstreamRequestURL(r)
 	if err != nil {
-		report.Skip()
+		report(breaker.Ignored)
 		h.refundTokens(tenant, reserved)
 		writeOpenAIError(w, http.StatusBadGateway, "The upstream request failed.", "server_error")
-		return false
+		return attemptDone
 	}
 	// The incoming context is cancelled when the client disconnects, which
 	// cancels this upstream call so a closed tab stops the paid request.
 	upReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, target, bytes.NewReader(payload))
 	if err != nil {
-		report.Skip()
+		report(breaker.Ignored)
 		h.refundTokens(tenant, reserved)
 		writeOpenAIError(w, http.StatusBadGateway, "The upstream request failed.", "server_error")
-		return false
+		return attemptDone
 	}
 	h.copyRequestHeaders(upReq.Header, r.Header)
 	upReq.ContentLength = int64(len(payload))
@@ -178,30 +202,54 @@ func (h *Handler) attempt(w http.ResponseWriter, r *http.Request, tenant string,
 	resp, err := h.client.Do(upReq)
 	if err != nil {
 		if r.Context().Err() != nil {
-			report.Skip()
-			return false
+			// The client hung up. That is not an upstream outage.
+			report(breaker.Ignored)
+			return attemptDone
 		}
 		log.Printf("upstream model %s: %v", model, err)
-		report.Failure()
-		return true
+		// A dial error or a timeout before headers means this model is down.
+		report(breaker.Failed)
+		return attemptFailed
 	}
-	if resp.StatusCode >= 500 {
+	outcome := upstreamOutcome(resp.StatusCode)
+	if outcome == breaker.Failed {
 		// Headers never reached the client, so another candidate can still serve.
 		log.Printf("upstream model %s: status %d", model, resp.StatusCode)
-		report.Failure()
+		report(breaker.Failed)
 		discardBody(resp.Body)
-		return true
+		return attemptFailed
 	}
-	report.Success()
+	// Status is known before the body is copied, so the stream loop stays a
+	// straight read, write, and flush.
+	report(outcome)
 	h.forward(w, r, resp, model, tenant, reserved)
-	return false
+	return attemptDone
 }
 
-func (h *Handler) allow(model string) (*breaker.Report, error) {
-	if h.breakers == nil {
-		return nil, nil
+func (h *Handler) allow(model string) (func(breaker.Outcome), error) {
+	if h.breakers != nil {
+		return h.breakers.Allow(model, time.Now())
 	}
-	return h.breakers.Allow(model, time.Now())
+	if h.breaker != nil {
+		return h.breaker.Allow(time.Now())
+	}
+	return func(breaker.Outcome) {}, nil
+}
+
+// upstreamOutcome classifies a response that already has headers. 400, 401,
+// and 404 are the caller's problem. 429 asks the caller to wait. Only
+// 500/502/503/504 say the upstream itself failed.
+func upstreamOutcome(status int) breaker.Outcome {
+	switch status {
+	case http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return breaker.Failed
+	case http.StatusBadRequest, http.StatusUnauthorized, http.StatusNotFound:
+		return breaker.Ignored
+	case http.StatusTooManyRequests:
+		return breaker.Backoff
+	default:
+		return breaker.Succeeded
+	}
 }
 
 func (h *Handler) candidates(model string) []string {
