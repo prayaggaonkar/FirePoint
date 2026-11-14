@@ -13,11 +13,13 @@ import (
 	"time"
 
 	"github.com/prayaggaonkar/firerouter/internal/proxy"
+	"github.com/prayaggaonkar/firerouter/internal/router"
 )
 
 func main() {
 	listen := flag.String("listen", envOr("FIREROUTER_LISTEN", ":8080"), "listen address")
 	upstream := flag.String("upstream", envOr("FIREROUTER_UPSTREAM", "http://localhost:9000"), "upstream base URL")
+	configPath := flag.String("config", "", "JSON file of model fallbacks")
 	rpm := flag.Int("rpm", 600, "requests per minute for one client")
 	tpm := flag.Int("tpm", 200000, "tokens per minute for one client")
 	flag.Parse()
@@ -28,6 +30,13 @@ func main() {
 	handler, err := proxy.NewHandler(*upstream, proxy.NewClient(), apiKey)
 	if err != nil {
 		log.Fatal(err)
+	}
+	if *configPath != "" {
+		rt, err := router.Load(*configPath)
+		if err != nil {
+			log.Fatal(err)
+		}
+		handler.SetRouter(rt)
 	}
 	handler.SetLimiter(*rpm, *tpm)
 
@@ -49,11 +58,8 @@ func main() {
 
 	errCh := make(chan error, 1)
 	go func() {
-		if apiKey != "" {
-			log.Printf("listening on %s, upstream %s, rpm %d, tpm %d, using FIREWORKS_API_KEY", *listen, *upstream, *rpm, *tpm)
-		} else {
-			log.Printf("listening on %s, upstream %s, rpm %d, tpm %d", *listen, *upstream, *rpm, *tpm)
-		}
+		log.Printf("listening on %s, upstream %s, rpm %d, tpm %d%s%s",
+			*listen, *upstream, *rpm, *tpm, configNote(*configPath), keyNote(apiKey))
 		errCh <- srv.ListenAndServe()
 	}()
 
@@ -73,6 +79,20 @@ func main() {
 			log.Printf("shutdown: %v", err)
 		}
 	}
+}
+
+func configNote(path string) string {
+	if path == "" {
+		return ""
+	}
+	return ", fallbacks " + path
+}
+
+func keyNote(apiKey string) string {
+	if apiKey == "" {
+		return ""
+	}
+	return ", using FIREWORKS_API_KEY"
 }
 
 func envOr(key, fallback string) string {

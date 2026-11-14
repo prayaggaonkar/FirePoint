@@ -108,6 +108,45 @@ func TestFailRateReturns503(t *testing.T) {
 	}
 }
 
+func TestBrokenModelNameReturns503(t *testing.T) {
+	h := newHandler(config{
+		firstTokenDelay: 0,
+		tokenInterval:   time.Millisecond,
+		tokens:          1,
+	})
+	ts := httptest.NewServer(h)
+	t.Cleanup(ts.Close)
+
+	broken, err := http.Post(ts.URL+"/v1/chat/completions", "application/json", strings.NewReader(`{"model":"big-broken","stream":false}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer broken.Body.Close()
+	if broken.StatusCode != http.StatusServiceUnavailable {
+		body, _ := io.ReadAll(broken.Body)
+		t.Fatalf("status = %d, want 503, body %s", broken.StatusCode, body)
+	}
+
+	ok, err := http.Post(ts.URL+"/v1/chat/completions", "application/json", strings.NewReader(`{"model":"small","stream":false}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ok.Body.Close()
+	if ok.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(ok.Body)
+		t.Fatalf("small status = %d, want 200, body %s", ok.StatusCode, body)
+	}
+	var parsed struct {
+		Model string `json:"model"`
+	}
+	if err := json.NewDecoder(ok.Body).Decode(&parsed); err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Model != "small" {
+		t.Fatalf("model = %q, want small", parsed.Model)
+	}
+}
+
 func lastOrEmpty(lines []string) string {
 	if len(lines) == 0 {
 		return ""
