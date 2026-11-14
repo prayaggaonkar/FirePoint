@@ -50,3 +50,17 @@ curl -N -X POST localhost:8080/v1/chat/completions \
 ```
 
 The proxy calls `https://api.fireworks.ai/inference/v1/chat/completions`. The app does not need the real key.
+
+### Fallbacks
+
+`-config` points at a JSON file. Each requested model is tried first. The names under `fallbacks` are tried in order when that model is skipped by its circuit breaker, errors before response headers, or returns a 5xx status. The response header `X-FireRouter-Model` is the model that served. After headers are sent, a mid-stream failure is not retried.
+
+```json
+{"models":{"big-broken":{"fallbacks":["small"]}}}
+```
+
+```bash
+./bin/firerouter -config firerouter.json
+```
+
+The mock returns 503 when the model name contains `broken`, so `big-broken` is served by `small`.
