@@ -11,11 +11,14 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/prayaggaonkar/firerouter/internal/breaker"
 	"github.com/prayaggaonkar/firerouter/internal/ratelimit"
+	"github.com/prayaggaonkar/firerouter/internal/router"
 )
 
 func TestChunksArriveAbout100msApart(t *testing.T) {
@@ -351,6 +354,260 @@ func TestActualTokensUsesTheTail(t *testing.T) {
 	}
 }
 
+func TestBrokenModelFallsBackToSmall(t *testing.T) {
+	var mu sync.Mutex
+	var seen []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Model    string `json:"model"`
+			Messages []struct {
+				Content string `json:"content"`
+			} `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode: %v", err)
+			http.Error(w, "bad json", http.StatusBadRequest)
+			return
+		}
+		mu.Lock()
+		seen = append(seen, req.Model)
+		mu.Unlock()
+		if strings.Contains(req.Model, "broken") {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = io.WriteString(w, `{"error":{"message":"down","type":"server_error"}}`)
+			return
+		}
+		if len(req.Messages) != 1 || req.Messages[0].Content != "hi" {
+			t.Errorf("messages = %+v", req.Messages)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]string{"model": req.Model})
+	}))
+	defer upstream.Close()
+
+	proxy := newFallbackProxy(t, upstream.URL, "big-broken", "small")
+	resp := postChat(t, proxy.URL, "", `{"model":"big-broken","messages":[{"role":"user","content":"hi"}]}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status %d, want 200, body %s", resp.StatusCode, body)
+	}
+	if got := resp.Header.Get("X-FireRouter-Model"); got != "small" {
+		t.Fatalf("X-FireRouter-Model = %q, want small", got)
+	}
+	var served struct {
+		Model string `json:"model"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&served); err != nil {
+		t.Fatal(err)
+	}
+	if served.Model != "small" {
+		t.Fatalf("served model = %q, want small", served.Model)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(seen) != 2 || seen[0] != "big-broken" || seen[1] != "small" {
+		t.Fatalf("upstream models = %v, want [big-broken small]", seen)
+	}
+}
+
+func TestDialErrorFallsBackBeforeHeaders(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Model string `json:"model"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode: %v", err)
+			return
+		}
+		if strings.Contains(req.Model, "broken") {
+			// Close before status bytes so the proxy still has a candidate left.
+			hj, ok := w.(http.Hijacker)
+			if !ok {
+				t.Error("upstream cannot hijack")
+				return
+			}
+			conn, _, err := hj.Hijack()
+			if err != nil {
+				t.Errorf("hijack: %v", err)
+				return
+			}
+			conn.Close()
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]string{"model": req.Model})
+	}))
+	defer upstream.Close()
+
+	proxy := newFallbackProxy(t, upstream.URL, "big-broken", "small")
+	resp := postChat(t, proxy.URL, "", `{"model":"big-broken"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status %d, want 200, body %s", resp.StatusCode, body)
+	}
+	if got := resp.Header.Get("X-FireRouter-Model"); got != "small" {
+		t.Fatalf("X-FireRouter-Model = %q, want small", got)
+	}
+}
+
+func TestOpenBreakerSkipsToFallback(t *testing.T) {
+	var bigHits, smallHits atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Model string `json:"model"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode: %v", err)
+			return
+		}
+		if req.Model == "big" {
+			bigHits.Add(1)
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		smallHits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"ok":true}`)
+	}))
+	defer upstream.Close()
+
+	h := newFallbackHandler(t, upstream.URL, "big", "small")
+	cfg := breaker.DefaultConfig()
+	cfg.MinRequests = 1
+	h.SetBreakers(breaker.NewRegistry(cfg))
+	proxy := httptest.NewServer(h)
+	defer proxy.Close()
+
+	for i := 0; i < 2; i++ {
+		resp := postChat(t, proxy.URL, "", `{"model":"big"}`)
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			t.Fatalf("request %d status %d, body %s", i+1, resp.StatusCode, body)
+		}
+		if got := resp.Header.Get("X-FireRouter-Model"); got != "small" {
+			resp.Body.Close()
+			t.Fatalf("X-FireRouter-Model = %q, want small", got)
+		}
+		resp.Body.Close()
+	}
+	if got := bigHits.Load(); got != 1 {
+		t.Fatalf("big was called %d times, want 1", got)
+	}
+	if got := smallHits.Load(); got != 2 {
+		t.Fatalf("small was called %d times, want 2", got)
+	}
+}
+
+func TestAllCandidatesFailReturns503(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer upstream.Close()
+
+	proxy := newFallbackProxy(t, upstream.URL, "big-broken", "small")
+	resp := postChat(t, proxy.URL, "", `{"model":"big-broken"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("status %d, want 503", resp.StatusCode)
+	}
+	if got := resp.Header.Get("X-FireRouter-Model"); got != "" {
+		t.Fatalf("X-FireRouter-Model = %q, want empty", got)
+	}
+}
+
+func TestUpstream4xxIsNotRetried(t *testing.T) {
+	var hits atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		var req struct {
+			Model string `json:"model"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if req.Model != "big" {
+			t.Errorf("fallback model %s was called", req.Model)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, `{"error":{"message":"bad","type":"invalid_request_error"}}`)
+	}))
+	defer upstream.Close()
+
+	proxy := newFallbackProxy(t, upstream.URL, "big", "small")
+	resp := postChat(t, proxy.URL, "", `{"model":"big"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status %d, want 400", resp.StatusCode)
+	}
+	if got := resp.Header.Get("X-FireRouter-Model"); got != "big" {
+		t.Fatalf("X-FireRouter-Model = %q, want big", got)
+	}
+	if got := hits.Load(); got != 1 {
+		t.Fatalf("upstream hits %d, want 1", got)
+	}
+}
+
+func TestNoFallbackAfterHeaders(t *testing.T) {
+	var mu sync.Mutex
+	var seen []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Model string `json:"model"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode: %v", err)
+			return
+		}
+		mu.Lock()
+		seen = append(seen, req.Model)
+		mu.Unlock()
+		if req.Model != "big" {
+			t.Errorf("fallback %s was called after headers", req.Model)
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		rc := http.NewResponseController(w)
+		_, _ = io.WriteString(w, "data: partial\n\n")
+		_ = rc.Flush()
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			t.Error("upstream cannot hijack")
+			return
+		}
+		conn, _, err := hj.Hijack()
+		if err != nil {
+			t.Errorf("hijack: %v", err)
+			return
+		}
+		conn.Close()
+	}))
+	defer upstream.Close()
+
+	proxy := newFallbackProxy(t, upstream.URL, "big", "small")
+	resp := postChat(t, proxy.URL, "", `{"model":"big","stream":true}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status %d, want 200", resp.StatusCode)
+	}
+	if got := resp.Header.Get("X-FireRouter-Model"); got != "big" {
+		t.Fatalf("X-FireRouter-Model = %q, want big", got)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	mu.Lock()
+	defer mu.Unlock()
+	if len(seen) != 1 || seen[0] != "big" {
+		t.Fatalf("upstream models = %v, want [big]", seen)
+	}
+}
+
 func postChat(t *testing.T, serverURL, auth, body string) *http.Response {
 	t.Helper()
 	req, err := http.NewRequest(http.MethodPost, serverURL+"/v1/chat/completions", strings.NewReader(body))
@@ -366,6 +623,25 @@ func postChat(t *testing.T, serverURL, auth, body string) *http.Response {
 		t.Fatal(err)
 	}
 	return resp
+}
+
+func newFallbackProxy(t *testing.T, upstream, model, fallback string) *httptest.Server {
+	t.Helper()
+	s := httptest.NewServer(newFallbackHandler(t, upstream, model, fallback))
+	t.Cleanup(s.Close)
+	return s
+}
+
+func newFallbackHandler(t *testing.T, upstream, model, fallback string) *Handler {
+	t.Helper()
+	h, err := NewHandler(upstream, NewClient(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.SetRouter(router.New(router.File{Models: map[string]router.Model{
+		model: {Fallbacks: []string{fallback}},
+	}}))
+	return h
 }
 
 func newTestProxy(t *testing.T, upstream string) *httptest.Server {
