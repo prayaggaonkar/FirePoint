@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/prayaggaonkar/firerouter/internal/breaker"
+	"github.com/prayaggaonkar/firerouter/internal/observability"
 	"github.com/prayaggaonkar/firerouter/internal/proxy"
 	"github.com/prayaggaonkar/firerouter/internal/router"
 )
@@ -42,6 +43,8 @@ func main() {
 	handler.SetLimiter(*rpm, *tpm)
 	// One breaker per model, so an open primary does not block its fallback.
 	handler.SetBreakers(breaker.NewRegistry(breaker.DefaultConfig()))
+	metrics := observability.New()
+	handler.SetMetrics(metrics)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -49,6 +52,7 @@ func main() {
 		_, _ = w.Write([]byte("ok\n"))
 	})
 	mux.Handle("POST /v1/chat/completions", handler)
+	mux.Handle("GET /metrics", metrics.Handler())
 
 	srv := &http.Server{
 		Addr:              *listen,
