@@ -70,3 +70,11 @@ The mock returns 503 when the model name contains `broken`, so `big-broken` is s
 ```bash
 curl -s localhost:8080/metrics
 ```
+
+### Load generator
+
+`loadgen` sends streaming requests on a fixed rate, without waiting for the previous response. The first `-warmup` (default 10s) is discarded. TTFT is the time from sending the request until the first `data:` line.
+
+```bash
+./bin/loadgen -url http://127.0.0.1:8080/v1/chat/completions -rate 5 -duration 30s -warmup 10s -concurrency 8 -json loadgen.json
+```

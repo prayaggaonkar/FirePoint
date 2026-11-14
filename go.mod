@@ -2,7 +2,10 @@ module github.com/prayaggaonkar/firerouter
 
 go 1.22.2
 
-require github.com/prometheus/client_golang v1.20.5
+require (
+	github.com/HdrHistogram/hdrhistogram-go v1.1.2
+	github.com/prometheus/client_golang v1.20.5
+)
 
 require (
 	github.com/beorn7/perks v1.0.1 // indirect
