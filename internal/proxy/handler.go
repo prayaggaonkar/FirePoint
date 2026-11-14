@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/prayaggaonkar/firerouter/internal/breaker"
+	"github.com/prayaggaonkar/firerouter/internal/observability"
 	"github.com/prayaggaonkar/firerouter/internal/ratelimit"
 	"github.com/prayaggaonkar/firerouter/internal/router"
 )
@@ -52,6 +53,10 @@ type Handler struct {
 	// breaker is one circuit for every model. Tests that are not about
 	// fallback use it. Nil skips the check.
 	breaker *breaker.Breaker
+	// metrics is nil in tests that are not checking /metrics.
+	metrics *observability.Metrics
+	// clock is the time source for latency samples and breaker decisions.
+	clock func() time.Time
 }
 
 // NewHandler parses the upstream base URL. client is the shared client from
@@ -68,7 +73,7 @@ func NewHandler(upstream string, client *http.Client, apiKey string) (*Handler, 
 	if client == nil {
 		client = NewClient()
 	}
-	return &Handler{upstream: u, client: client, apiKey: apiKey}, nil
+	return &Handler{upstream: u, client: client, apiKey: apiKey, clock: time.Now}, nil
 }
 
 // SetRouter installs the fallback list. A nil router tries only the model
@@ -94,12 +99,19 @@ func (h *Handler) SetBreaker(b *breaker.Breaker) {
 	h.breaker = b
 }
 
+// SetMetrics installs the Prometheus series. Nil leaves recording as a no-op.
+func (h *Handler) SetMetrics(m *observability.Metrics) {
+	h.metrics = m
+}
+
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	// Latency starts when the request is accepted, before the body is read.
+	received := h.now()
 
 	body, err := readRequestBody(w, r)
 	if err != nil {
@@ -122,8 +134,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	reserved := 0
 	if h.limiter != nil {
 		reserved = ratelimit.EstimateTokens(body)
-		ok, retryAfter := h.limiter.Allow(tenant, reserved, time.Now())
+		ok, retryAfter := h.limiter.Allow(tenant, reserved, h.now())
 		if !ok {
+			h.metrics.RateLimited()
 			writeRateLimited(w, retryAfter)
 			return
 		}
@@ -133,7 +146,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// cannot switch models: the client may already be reading the body.
 	sawFailure := false
 	for _, model := range h.candidates(requested) {
-		switch h.attempt(w, r, tenant, reserved, model, body) {
+		switch h.attempt(w, r, tenant, reserved, model, body, received) {
 		case attemptDone:
 			return
 		case attemptFailed:
@@ -165,7 +178,8 @@ const (
 
 // attempt sends one candidate. Headers are the commit point: a 5xx or a dial
 // error can still try the next model, and anything else is streamed as-is.
-func (h *Handler) attempt(w http.ResponseWriter, r *http.Request, tenant string, reserved int, model string, body []byte) attemptResult {
+func (h *Handler) attempt(w http.ResponseWriter, r *http.Request, tenant string, reserved int, model string, body []byte, received time.Time) attemptResult {
+	defer h.recordBreaker(model)
 	report, err := h.allow(model)
 	if err != nil {
 		// Ask before dialing. An open breaker fails in this process instead of
@@ -199,6 +213,9 @@ func (h *Handler) attempt(w http.ResponseWriter, r *http.Request, tenant string,
 	h.copyRequestHeaders(upReq.Header, r.Header)
 	upReq.ContentLength = int64(len(payload))
 
+	// Stamp the send before Do returns. Do blocks on upstream headers, and
+	// that wait is the model's time, not the proxy's.
+	sent := h.now()
 	resp, err := h.client.Do(upReq)
 	if err != nil {
 		if r.Context().Err() != nil {
@@ -208,9 +225,11 @@ func (h *Handler) attempt(w http.ResponseWriter, r *http.Request, tenant string,
 		}
 		log.Printf("upstream model %s: %v", model, err)
 		// A dial error or a timeout before headers means this model is down.
+		h.metrics.UpstreamStatus("error")
 		report(breaker.Failed)
 		return attemptFailed
 	}
+	h.metrics.UpstreamStatus(strconv.Itoa(resp.StatusCode))
 	outcome := upstreamOutcome(resp.StatusCode)
 	if outcome == breaker.Failed {
 		// Headers never reached the client, so another candidate can still serve.
@@ -222,16 +241,16 @@ func (h *Handler) attempt(w http.ResponseWriter, r *http.Request, tenant string,
 	// Status is known before the body is copied, so the stream loop stays a
 	// straight read, write, and flush.
 	report(outcome)
-	h.forward(w, r, resp, model, tenant, reserved)
+	h.forward(w, r, resp, model, tenant, reserved, received, sent)
 	return attemptDone
 }
 
 func (h *Handler) allow(model string) (func(breaker.Outcome), error) {
 	if h.breakers != nil {
-		return h.breakers.Allow(model, time.Now())
+		return h.breakers.Allow(model, h.now())
 	}
 	if h.breaker != nil {
-		return h.breaker.Allow(time.Now())
+		return h.breaker.Allow(h.now())
 	}
 	return func(breaker.Outcome) {}, nil
 }
@@ -259,22 +278,30 @@ func (h *Handler) candidates(model string) []string {
 	return h.router.Candidates(model)
 }
 
-func (h *Handler) forward(w http.ResponseWriter, r *http.Request, resp *http.Response, model, tenant string, reserved int) {
+func (h *Handler) forward(w http.ResponseWriter, r *http.Request, resp *http.Response, model, tenant string, reserved int, received, sent time.Time) {
 	defer resp.Body.Close()
 
 	if ct := resp.Header.Get("Content-Type"); ct != "" {
 		w.Header().Set("Content-Type", ct)
 	}
-	if isEventStream(resp.Header.Get("Content-Type")) {
+	streaming := isEventStream(resp.Header.Get("Content-Type"))
+	if streaming {
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("X-Accel-Buffering", "no")
+		h.metrics.AddStreams(1)
+		defer h.metrics.AddStreams(-1)
 	}
 	// Writing headers commits this model. The body is streamed as it arrives
 	// and is not replaced if the upstream fails halfway through.
 	w.Header().Set(servedModelHeader, model)
 	w.WriteHeader(resp.StatusCode)
 
-	tail, err := streamBody(w, resp.Body)
+	var mark byteTimes
+	tail, err := streamBody(w, resp.Body, &mark, h.now)
+	if mark.ok {
+		h.metrics.ObserveTTFT(mark.forwarded.Sub(received))
+		h.metrics.ObserveOverhead(observability.Overhead(received, sent, mark.upstream, mark.forwarded))
+	}
 	if err != nil && r.Context().Err() == nil && !errors.Is(err, context.Canceled) {
 		log.Printf("streaming response: %v", err)
 	}
@@ -334,23 +361,43 @@ func isEventStream(contentType string) bool {
 	return strings.Contains(strings.ToLower(contentType), "text/event-stream")
 }
 
+// byteTimes holds the first response byte, taken inside the flush loop.
+type byteTimes struct {
+	upstream  time.Time
+	forwarded time.Time
+	ok        bool
+}
+
 // streamBody copies upstream bytes to the client one read at a time. Flush
 // pushes those bytes onto the network immediately; without it the server
 // waits to fill a buffer and the user sees the whole answer at once.
 // The returned tail is only the last 4 KB, which is where the usage object sits.
-func streamBody(dst http.ResponseWriter, src io.Reader) ([]byte, error) {
+// mark records the first byte only. The flush itself is unchanged.
+func streamBody(dst http.ResponseWriter, src io.Reader, mark *byteTimes, now func() time.Time) ([]byte, error) {
 	buf := copyBufPool.Get().([]byte)
 	defer copyBufPool.Put(buf)
 	var tail tailBuf
+	if now == nil {
+		now = time.Now
+	}
 
 	for {
 		n, rerr := src.Read(buf)
 		if n > 0 {
+			var upstreamFirst time.Time
+			if mark != nil && !mark.ok {
+				upstreamFirst = now()
+			}
 			if _, werr := dst.Write(buf[:n]); werr != nil {
 				return tail.bytes(), werr
 			}
 			if ferr := http.NewResponseController(dst).Flush(); ferr != nil {
 				return tail.bytes(), ferr
+			}
+			if mark != nil && !mark.ok {
+				mark.upstream = upstreamFirst
+				mark.forwarded = now()
+				mark.ok = true
 			}
 			tail.write(buf[:n])
 		}
@@ -361,6 +408,30 @@ func streamBody(dst http.ResponseWriter, src io.Reader) ([]byte, error) {
 			return tail.bytes(), rerr
 		}
 	}
+}
+
+func (h *Handler) now() time.Time {
+	if h == nil || h.clock == nil {
+		return time.Now()
+	}
+	return h.clock()
+}
+
+func (h *Handler) recordBreaker(model string) {
+	if h.metrics == nil {
+		return
+	}
+	var b *breaker.Breaker
+	switch {
+	case h.breakers != nil:
+		b = h.breakers.Get(model)
+	case h.breaker != nil:
+		b = h.breaker
+	default:
+		return
+	}
+	// State values match the breaker enum: 0 closed, 1 open, 2 half-open.
+	h.metrics.SetBreakerState(model, float64(b.State()))
 }
 
 func (h *Handler) refundTokens(tenant string, tokens int) {
