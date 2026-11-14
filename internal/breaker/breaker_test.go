@@ -13,10 +13,10 @@ func TestClosedOpensAtThreshold(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 
 	for i := 0; i < 11; i++ {
-		mustAllow(t, b, now).Success()
+		mustAllow(t, b, now)(Succeeded)
 	}
 	for i := 0; i < 9; i++ {
-		mustAllow(t, b, now).Failure()
+		mustAllow(t, b, now)(Failed)
 	}
 	if b.State() != Closed {
 		t.Fatalf("state = %s after 20 calls under the threshold", b.State())
@@ -24,17 +24,30 @@ func TestClosedOpensAtThreshold(t *testing.T) {
 
 	b = New(DefaultConfig())
 	for i := 0; i < 10; i++ {
-		mustAllow(t, b, now).Success()
+		mustAllow(t, b, now)(Succeeded)
 	}
 	for i := 0; i < 9; i++ {
-		mustAllow(t, b, now).Failure()
+		mustAllow(t, b, now)(Failed)
 	}
 	if b.State() != Closed {
 		t.Fatalf("state = %s before the minimum sample", b.State())
 	}
-	mustAllow(t, b, now).Failure()
+	mustAllow(t, b, now)(Failed)
 	if b.State() != Open {
 		t.Fatalf("state = %s, want open at 10/20 failures", b.State())
+	}
+}
+
+func TestIgnoredAndBackoffAreNotSamples(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.MinRequests = 2
+	b := New(cfg)
+	now := time.Unix(1_700_000_000, 0)
+	mustAllow(t, b, now)(Ignored)
+	mustAllow(t, b, now)(Backoff)
+	mustAllow(t, b, now)(Failed)
+	if b.State() != Closed {
+		t.Fatalf("state = %s, want closed", b.State())
 	}
 }
 
@@ -68,7 +81,7 @@ func TestOpenBecomesHalfOpenAfterCooldown(t *testing.T) {
 func TestHalfOpenClosesAfterProbesSucceed(t *testing.T) {
 	b, now := halfOpenBreaker(t)
 	for i := 0; i < 3; i++ {
-		mustAllow(t, b, now).Success()
+		mustAllow(t, b, now)(Succeeded)
 		if i < 2 && b.State() != HalfOpen {
 			t.Fatalf("closed after %d probes", i+1)
 		}
@@ -77,7 +90,7 @@ func TestHalfOpenClosesAfterProbesSucceed(t *testing.T) {
 		t.Fatalf("state = %s, want closed", b.State())
 	}
 	// The failure window was cleared, so one new error does not reopen it.
-	mustAllow(t, b, now).Failure()
+	mustAllow(t, b, now)(Failed)
 	if b.State() != Closed {
 		t.Fatalf("state = %s after one fresh failure", b.State())
 	}
@@ -87,11 +100,11 @@ func TestHalfOpenOpensOnProbeFailure(t *testing.T) {
 	b, now := halfOpenBreaker(t)
 	first := mustAllow(t, b, now)
 	second := mustAllow(t, b, now)
-	first.Failure()
+	first(Failed)
 	if b.State() != Open {
 		t.Fatalf("state = %s, want open", b.State())
 	}
-	second.Success()
+	second(Succeeded)
 	if b.State() != Open {
 		t.Fatalf("a late probe success left state %s", b.State())
 	}
@@ -108,7 +121,7 @@ func TestHalfOpenOpensOnProbeFailure(t *testing.T) {
 
 func TestHalfOpenProbeLimit(t *testing.T) {
 	b, now := halfOpenBreaker(t)
-	var release []*Report
+	var release []func(Outcome)
 	for i := 0; i < 3; i++ {
 		release = append(release, mustAllow(t, b, now))
 	}
@@ -118,7 +131,7 @@ func TestHalfOpenProbeLimit(t *testing.T) {
 	if b.State() != HalfOpen {
 		t.Fatalf("state = %s", b.State())
 	}
-	release[0].Success()
+	release[0](Succeeded)
 	if _, err := b.Allow(now); err != nil {
 		t.Fatalf("probe slot was not released: %v", err)
 	}
@@ -159,9 +172,9 @@ func TestConcurrentClosedRecords(t *testing.T) {
 				return
 			}
 			if i%2 == 0 {
-				done.Success()
+				done(Succeeded)
 			} else {
-				done.Failure()
+				done(Failed)
 			}
 		}(i)
 	}
@@ -171,28 +184,12 @@ func TestConcurrentClosedRecords(t *testing.T) {
 	}
 }
 
-func TestSkipDoesNotCountInClosed(t *testing.T) {
-	b := New(DefaultConfig())
-	now := time.Unix(1_700_000_000, 0)
-	mustAllow(t, b, now).Skip()
-	for i := 0; i < 19; i++ {
-		mustAllow(t, b, now).Failure()
-	}
-	if b.State() != Closed {
-		t.Fatalf("state = %s, skip counted toward the minimum", b.State())
-	}
-	mustAllow(t, b, now).Failure()
-	if b.State() != Open {
-		t.Fatalf("state = %s, want open", b.State())
-	}
-}
-
 func openBreaker(t *testing.T) (*Breaker, time.Time) {
 	t.Helper()
 	b := New(DefaultConfig())
 	now := time.Unix(1_700_000_000, 0)
 	for i := 0; i < 20; i++ {
-		mustAllow(t, b, now).Failure()
+		mustAllow(t, b, now)(Failed)
 	}
 	if b.State() != Open {
 		t.Fatalf("state = %s, want open", b.State())
@@ -206,25 +203,26 @@ func halfOpenBreaker(t *testing.T) (*Breaker, time.Time) {
 	now := opened.Add(15 * time.Second)
 	// Allow is what leaves Open, and that call also takes a probe slot. Give the
 	// slot back without counting a success so tests start with a full budget.
-	done, err := b.Allow(now)
-	if err != nil {
+	if _, err := b.Allow(now); err != nil {
 		t.Fatal(err)
 	}
-	done.Skip()
 	if b.State() != HalfOpen {
 		t.Fatalf("state = %s, want half-open", b.State())
 	}
+	b.mu.Lock()
+	b.inflight--
+	b.mu.Unlock()
 	return b, now
 }
 
-func mustAllow(t *testing.T, b *Breaker, now time.Time) *Report {
+func mustAllow(t *testing.T, b *Breaker, now time.Time) func(Outcome) {
 	t.Helper()
 	done, err := b.Allow(now)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if done == nil {
-		t.Fatal("nil report")
+		t.Fatal("nil callback")
 	}
 	return done
 }

@@ -340,6 +340,127 @@ func TestUsageRefundLetsAnotherRequestThrough(t *testing.T) {
 	}
 }
 
+func TestBreakerOpensWhenUpstreamReturns503(t *testing.T) {
+	var hits atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = io.WriteString(w, `{"error":{"message":"upstream down","type":"server_error"}}`)
+	}))
+	defer upstream.Close()
+
+	h, err := NewHandler(upstream.URL, NewClient(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.SetBreaker(breaker.New(breaker.Config{
+		Window:         30 * time.Second,
+		MinRequests:    4,
+		ErrorThreshold: 0.5,
+		OpenDuration:   15 * time.Second,
+		HalfOpenProbes: 3,
+	}))
+	proxy := httptest.NewServer(h)
+	defer proxy.Close()
+
+	for i := 0; i < 4; i++ {
+		resp := postChat(t, proxy.URL, "", `{"model":"m"}`)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusServiceUnavailable {
+			t.Fatalf("request %d status %d", i+1, resp.StatusCode)
+		}
+	}
+	if got := hits.Load(); got != 4 {
+		t.Fatalf("upstream hits before the breaker opened: %d", got)
+	}
+
+	resp := postChat(t, proxy.URL, "", `{"model":"m"}`)
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("status %d, want 503", resp.StatusCode)
+	}
+	if got := hits.Load(); got != 4 {
+		t.Fatalf("open breaker still called upstream, hits %d", got)
+	}
+	var apiErr struct {
+		Error struct {
+			Message string `json:"message"`
+			Type    string `json:"type"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(body, &apiErr); err != nil {
+		t.Fatal(err)
+	}
+	if apiErr.Error.Type != "server_error" || apiErr.Error.Message != "The upstream is unavailable." {
+		t.Fatalf("error = %+v", apiErr.Error)
+	}
+}
+
+func TestClientAndBackoffStatusesDoNotOpenBreaker(t *testing.T) {
+	for _, code := range []int{http.StatusBadRequest, http.StatusUnauthorized, http.StatusNotFound, http.StatusTooManyRequests} {
+		t.Run(strconv.Itoa(code), func(t *testing.T) {
+			var hits atomic.Int32
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				hits.Add(1)
+				w.WriteHeader(code)
+			}))
+			defer upstream.Close()
+
+			h, err := NewHandler(upstream.URL, NewClient(), "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			h.SetBreaker(breaker.New(breaker.Config{
+				Window:         30 * time.Second,
+				MinRequests:    2,
+				ErrorThreshold: 0.5,
+				OpenDuration:   15 * time.Second,
+				HalfOpenProbes: 3,
+			}))
+			proxy := httptest.NewServer(h)
+			defer proxy.Close()
+
+			for i := 0; i < 4; i++ {
+				resp := postChat(t, proxy.URL, "", `{"model":"m"}`)
+				resp.Body.Close()
+				if resp.StatusCode != code {
+					t.Fatalf("request %d status %d, want %d", i+1, resp.StatusCode, code)
+				}
+			}
+			if got := hits.Load(); got != 4 {
+				t.Fatalf("upstream hits %d, want 4", got)
+			}
+		})
+	}
+}
+
+func TestUpstreamOutcome(t *testing.T) {
+	tests := []struct {
+		status int
+		want   breaker.Outcome
+	}{
+		{http.StatusOK, breaker.Succeeded},
+		{http.StatusBadRequest, breaker.Ignored},
+		{http.StatusUnauthorized, breaker.Ignored},
+		{http.StatusNotFound, breaker.Ignored},
+		{http.StatusTooManyRequests, breaker.Backoff},
+		{http.StatusInternalServerError, breaker.Failed},
+		{http.StatusBadGateway, breaker.Failed},
+		{http.StatusServiceUnavailable, breaker.Failed},
+		{http.StatusGatewayTimeout, breaker.Failed},
+	}
+	for _, tc := range tests {
+		if got := upstreamOutcome(tc.status); got != tc.want {
+			t.Errorf("status %d outcome %v, want %v", tc.status, got, tc.want)
+		}
+	}
+}
+
 func TestActualTokensUsesTheTail(t *testing.T) {
 	var tail tailBuf
 	tail.write([]byte(`{"usage":{"total_tokens":1}}`))
