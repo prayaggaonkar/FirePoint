@@ -62,3 +62,11 @@ The proxy calls `https://api.fireworks.ai/inference/v1/chat/completions`. The ap
 ```
 
 The mock returns 503 when the model name contains `broken`, so `big-broken` is served by `small`.
+
+### Metrics
+
+`GET /metrics` is Prometheus text. It reports time-to-first-byte, proxy overhead, active event streams, upstream status codes, rate-limit rejections, and each model's breaker state. Prompts and API keys are not labels.
+
+```bash
+curl -s localhost:8080/metrics
+```
