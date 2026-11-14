@@ -30,7 +30,7 @@ func (r *Registry) Get(model string) *Breaker {
 	return b
 }
 
-// Allow asks the breaker for model. The caller finishes the returned report.
-func (r *Registry) Allow(model string, now time.Time) (*Report, error) {
+// Allow asks the breaker for model. The caller runs the callback once.
+func (r *Registry) Allow(model string, now time.Time) (func(Outcome), error) {
 	return r.Get(model).Allow(now)
 }

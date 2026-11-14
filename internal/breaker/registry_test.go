@@ -20,7 +20,7 @@ func TestRegistryKeepsABreakerPerModel(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		done.Failure()
+		done(Failed)
 	}
 	if _, err := r.Allow("big", now); !errors.Is(err, ErrOpen) {
 		t.Fatalf("big: %v", err)
