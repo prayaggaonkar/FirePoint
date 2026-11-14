@@ -96,6 +96,11 @@ func (h *handler) completions(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body", "invalid_request_error")
 		return
 	}
+	// A model whose name contains "broken" is the down primary in a fallback test.
+	if strings.Contains(req.Model, "broken") {
+		writeError(w, http.StatusServiceUnavailable, "The server is overloaded or not ready yet.", "server_error")
+		return
+	}
 	if h.shouldFail() {
 		writeError(w, http.StatusServiceUnavailable, "The server is overloaded or not ready yet.", "server_error")
 		return
