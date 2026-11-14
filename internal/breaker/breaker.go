@@ -101,10 +101,43 @@ func (b *Breaker) State() State {
 	return b.state
 }
 
-// Allow either returns a callback the caller must run with the outcome, or
-// ErrOpen when the call must not be sent. The callback records the outcome at
-// the same instant Allow saw, which is the injected clock.
-func (b *Breaker) Allow(now time.Time) (func(success bool), error) {
+// Report is the outcome of one call Allow let through. Call it exactly once.
+// A nil Report ignores every method so a caller with no breaker can still
+// share the same path.
+type Report struct {
+	once sync.Once
+	fn   func(outcome)
+}
+
+// Success records a call that got a usable response before the caller committed.
+func (r *Report) Success() { r.finish(outcomeSuccess) }
+
+// Failure records an upstream error or a 5xx that happened before commit.
+func (r *Report) Failure() { r.finish(outcomeFailure) }
+
+// Skip releases the call without a sample. A client that disconnects before
+// the upstream answers is not evidence the model is down or recovered.
+func (r *Report) Skip() { r.finish(outcomeSkip) }
+
+func (r *Report) finish(o outcome) {
+	if r == nil || r.fn == nil {
+		return
+	}
+	r.once.Do(func() { r.fn(o) })
+}
+
+type outcome int
+
+const (
+	outcomeSkip outcome = iota
+	outcomeSuccess
+	outcomeFailure
+)
+
+// Allow either returns a report the caller must finish, or ErrOpen when the
+// call must not be sent. The report records the outcome at the same instant
+// Allow saw, which is the injected clock.
+func (b *Breaker) Allow(now time.Time) (*Report, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.advance(now)
@@ -118,15 +151,9 @@ func (b *Breaker) Allow(now time.Time) (func(success bool), error) {
 		}
 		b.inflight++
 		gen := b.generation
-		var once sync.Once
-		return func(success bool) {
-			once.Do(func() { b.finishProbe(gen, success, now) })
-		}, nil
+		return &Report{fn: func(o outcome) { b.finishProbe(gen, o, now) }}, nil
 	default:
-		var once sync.Once
-		return func(success bool) {
-			once.Do(func() { b.finishClosed(success, now) })
-		}, nil
+		return &Report{fn: func(o outcome) { b.finishClosed(o, now) }}, nil
 	}
 }
 
@@ -143,13 +170,16 @@ func (b *Breaker) advance(now time.Time) {
 	b.successes = 0
 }
 
-func (b *Breaker) finishClosed(success bool, now time.Time) {
+func (b *Breaker) finishClosed(o outcome, now time.Time) {
+	if o == outcomeSkip {
+		return
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.state != Closed {
 		return
 	}
-	b.win.Add(success, now)
+	b.win.Add(o == outcomeSuccess, now)
 	if b.win.Total(now) < b.cfg.MinRequests {
 		return
 	}
@@ -158,7 +188,7 @@ func (b *Breaker) finishClosed(success bool, now time.Time) {
 	}
 }
 
-func (b *Breaker) finishProbe(gen int, success bool, now time.Time) {
+func (b *Breaker) finishProbe(gen int, o outcome, now time.Time) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if gen != b.generation || b.state != HalfOpen {
@@ -167,7 +197,10 @@ func (b *Breaker) finishProbe(gen int, success bool, now time.Time) {
 	if b.inflight > 0 {
 		b.inflight--
 	}
-	if !success {
+	if o == outcomeSkip {
+		return
+	}
+	if o == outcomeFailure {
 		// One failed probe means the upstream is still down. Reject again
 		// instead of waiting for the other probes.
 		b.trip(now)
