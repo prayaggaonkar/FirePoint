@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/prayaggaonkar/firerouter/internal/breaker"
 	"github.com/prayaggaonkar/firerouter/internal/ratelimit"
 )
 
@@ -40,6 +41,9 @@ type Handler struct {
 	// limiter is per client. It stays nil in tests that are not checking
 	// quotas. The process always sets one before serving traffic.
 	limiter *ratelimit.Limiter
+	// breaker watches the upstream. Nil skips it, which is how tests that
+	// are not about outages stay focused on the proxy path.
+	breaker *breaker.Breaker
 }
 
 // NewHandler parses the upstream base URL. client is the shared client from
@@ -63,6 +67,11 @@ func NewHandler(upstream string, client *http.Client, apiKey string) (*Handler, 
 // are the burst and the sustained rate for one Authorization value.
 func (h *Handler) SetLimiter(requestsPerMinute, tokensPerMinute int) {
 	h.limiter = ratelimit.NewLimiter(requestsPerMinute, tokensPerMinute)
+}
+
+// SetBreaker installs the upstream circuit breaker.
+func (h *Handler) SetBreaker(b *breaker.Breaker) {
+	h.breaker = b
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -94,8 +103,18 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Ask before dialing. An open breaker fails in this process instead of
+	// making the client wait out an upstream timeout.
+	report, err := h.allowUpstream(time.Now())
+	if err != nil {
+		h.refundTokens(tenant, reserved)
+		writeOpenAIError(w, http.StatusServiceUnavailable, "The upstream is unavailable.", "server_error")
+		return
+	}
+
 	target, err := h.upstreamRequestURL(r)
 	if err != nil {
+		report(breaker.Ignored)
 		h.refundTokens(tenant, reserved)
 		writeOpenAIError(w, http.StatusBadGateway, "The upstream request failed.", "server_error")
 		return
@@ -104,6 +123,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// cancels this upstream call so a closed tab stops the paid request.
 	upReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, target, bytes.NewReader(body))
 	if err != nil {
+		report(breaker.Ignored)
 		h.refundTokens(tenant, reserved)
 		writeOpenAIError(w, http.StatusBadGateway, "The upstream request failed.", "server_error")
 		return
@@ -114,15 +134,22 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	resp, err := h.client.Do(upReq)
 	if err != nil {
 		if r.Context().Err() != nil {
+			// The client hung up. That is not an upstream outage.
+			report(breaker.Ignored)
 			return
 		}
 		log.Printf("upstream request failed: %v", err)
+		// A dial error or a timeout before headers means the upstream is down.
+		report(breaker.Failed)
 		// The model never ran, so the reservation should not keep blocking later calls.
 		h.refundTokens(tenant, reserved)
 		writeOpenAIError(w, http.StatusBadGateway, "The upstream request failed.", "server_error")
 		return
 	}
 	defer resp.Body.Close()
+	// Status is known before the body is copied. Record it here so the
+	// streaming loop below stays a straight read, write, and flush.
+	report(upstreamOutcome(resp.StatusCode))
 
 	if ct := resp.Header.Get("Content-Type"); ct != "" {
 		w.Header().Set("Content-Type", ct)
@@ -214,6 +241,29 @@ func streamBody(dst http.ResponseWriter, src io.Reader) ([]byte, error) {
 		if rerr != nil {
 			return tail.bytes(), rerr
 		}
+	}
+}
+
+func (h *Handler) allowUpstream(now time.Time) (func(breaker.Outcome), error) {
+	if h.breaker == nil {
+		return func(breaker.Outcome) {}, nil
+	}
+	return h.breaker.Allow(now)
+}
+
+// upstreamOutcome classifies a response that already has headers. 400, 401,
+// and 404 are the caller's problem. 429 asks the caller to wait. Only
+// 500/502/503/504 say the upstream itself failed.
+func upstreamOutcome(status int) breaker.Outcome {
+	switch status {
+	case http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return breaker.Failed
+	case http.StatusBadRequest, http.StatusUnauthorized, http.StatusNotFound:
+		return breaker.Ignored
+	case http.StatusTooManyRequests:
+		return breaker.Backoff
+	default:
+		return breaker.Succeeded
 	}
 }
 
