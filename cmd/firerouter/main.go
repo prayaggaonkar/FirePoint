@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/prayaggaonkar/firerouter/internal/breaker"
 	"github.com/prayaggaonkar/firerouter/internal/proxy"
 )
 
@@ -30,6 +31,7 @@ func main() {
 		log.Fatal(err)
 	}
 	handler.SetLimiter(*rpm, *tpm)
+	handler.SetBreaker(breaker.New(breaker.DefaultConfig()))
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {

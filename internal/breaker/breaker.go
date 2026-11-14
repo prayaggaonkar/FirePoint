@@ -10,6 +10,23 @@ import (
 // fail fast instead of waiting on a broken upstream.
 var ErrOpen = errors.New("circuit breaker open")
 
+// Outcome is how a call that was allowed to run finished.
+type Outcome int
+
+const (
+	// Succeeded means the upstream answered in a way that counts as healthy.
+	Succeeded Outcome = iota
+	// Failed means the upstream is unhealthy: a connection error, a timeout
+	// before the first byte, or HTTP 500/502/503/504.
+	Failed
+	// Ignored is not a sample. Client errors such as 400, 401, and 404 say
+	// nothing about whether the upstream process is down.
+	Ignored
+	// Backoff is an upstream 429. The caller should slow down. It is not a
+	// breaker failure and it does not prove the upstream has recovered.
+	Backoff
+)
+
 // State is the breaker's switch position.
 type State int
 
@@ -104,7 +121,7 @@ func (b *Breaker) State() State {
 // Allow either returns a callback the caller must run with the outcome, or
 // ErrOpen when the call must not be sent. The callback records the outcome at
 // the same instant Allow saw, which is the injected clock.
-func (b *Breaker) Allow(now time.Time) (func(success bool), error) {
+func (b *Breaker) Allow(now time.Time) (func(Outcome), error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.advance(now)
@@ -119,13 +136,13 @@ func (b *Breaker) Allow(now time.Time) (func(success bool), error) {
 		b.inflight++
 		gen := b.generation
 		var once sync.Once
-		return func(success bool) {
-			once.Do(func() { b.finishProbe(gen, success, now) })
+		return func(outcome Outcome) {
+			once.Do(func() { b.finishProbe(gen, outcome, now) })
 		}, nil
 	default:
 		var once sync.Once
-		return func(success bool) {
-			once.Do(func() { b.finishClosed(success, now) })
+		return func(outcome Outcome) {
+			once.Do(func() { b.finishClosed(outcome, now) })
 		}, nil
 	}
 }
@@ -143,13 +160,13 @@ func (b *Breaker) advance(now time.Time) {
 	b.successes = 0
 }
 
-func (b *Breaker) finishClosed(success bool, now time.Time) {
+func (b *Breaker) finishClosed(outcome Outcome, now time.Time) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if b.state != Closed {
+	if b.state != Closed || neutral(outcome) {
 		return
 	}
-	b.win.Add(success, now)
+	b.win.Add(outcome == Succeeded, now)
 	if b.win.Total(now) < b.cfg.MinRequests {
 		return
 	}
@@ -158,7 +175,7 @@ func (b *Breaker) finishClosed(success bool, now time.Time) {
 	}
 }
 
-func (b *Breaker) finishProbe(gen int, success bool, now time.Time) {
+func (b *Breaker) finishProbe(gen int, outcome Outcome, now time.Time) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if gen != b.generation || b.state != HalfOpen {
@@ -167,7 +184,14 @@ func (b *Breaker) finishProbe(gen int, success bool, now time.Time) {
 	if b.inflight > 0 {
 		b.inflight--
 	}
-	if !success {
+	if neutral(outcome) {
+		// The slot is free, but this call did not show recovery.
+		if b.inflight == 0 && b.successes >= b.cfg.HalfOpenProbes {
+			b.close()
+		}
+		return
+	}
+	if outcome != Succeeded {
 		// One failed probe means the upstream is still down. Reject again
 		// instead of waiting for the other probes.
 		b.trip(now)
@@ -179,6 +203,10 @@ func (b *Breaker) finishProbe(gen int, success bool, now time.Time) {
 	if b.inflight == 0 && b.successes >= b.cfg.HalfOpenProbes {
 		b.close()
 	}
+}
+
+func neutral(outcome Outcome) bool {
+	return outcome == Ignored || outcome == Backoff
 }
 
 func (b *Breaker) trip(now time.Time) {
