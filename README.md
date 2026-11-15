@@ -1,124 +1,152 @@
 # FireRouter
 
-An open-source, low-latency streaming proxy that sits in front of Fireworks AI's OpenAI-compatible API.
+A small streaming proxy for apps that call Fireworks through the OpenAI SDK and want per-tenant limits and failover without giving up first-token latency.
 
-## Quick start
+![Failover from primary to fallback](docs/media/failover.gif)
 
-Build the programs:
+## Why
 
-```bash
-make build
-```
+- Each tenant has its own request and token budget.
+- A model that starts failing is skipped, and the request goes to the next configured model.
+- Streams are flushed as each chunk arrives. On the published run, median time to first token was 0.128 ms higher through the proxy than direct.
+- One static binary. The container image is distroless and runs as nonroot.
 
-### Mock upstream
+## Try it in 60 seconds
 
-In one terminal, start the makeshift Fireworks server:
-
-```bash
-./bin/mockupstream
-```
-
-`-admin-token` opens a small control API. Without the flag those routes stay closed. Send the token as `Authorization: Bearer`. `POST /admin/fail` with `{"model_contains":"primary","rate":1.0}` fails models whose name contains that text. `rate` is from 0 to 1, and the first matching rule wins. `GET /admin/state` lists the rules. `POST /admin/reset` clears them.
+No Fireworks key. The compose file points FireRouter at the mock.
 
 ```bash
-./bin/mockupstream -admin-token secret
-curl -X POST localhost:9000/admin/fail \
-  -H 'Authorization: Bearer secret' \
-  -H 'Content-Type: application/json' \
-  -d '{"model_contains":"primary","rate":1.0}'
+docker compose -f deploy/docker-compose.yml up --build
 ```
 
-In another, start the proxy. It listens on `:8080` and forwards to `http://localhost:9000`:
+Grafana is anonymous at [http://localhost:3000](http://localhost:3000). Prometheus is on port 9090. The proxy is on port 8080.
+
+`make demo-up` does the same compose up and also installs the pinned OpenAI package into `demo/.venv`. `make demo-down` stops the stack.
+
+## Use it with your app
+
+Point the OpenAI SDK at FireRouter. The key here is a FireRouter virtual key, not the Fireworks key.
+
+```python
+client = OpenAI(
+    base_url="http://localhost:8080/v1",
+    api_key="fr-your-virtual-key",
+)
+```
+
+```javascript
+const client = new OpenAI({
+  baseURL: "http://localhost:8080/v1",
+  apiKey: "fr-your-virtual-key",
+});
+```
+
+The demo stack already has two virtual keys in `deploy/demo.env`. They match the hashes in `deploy/demo-keys.json`.
+
+Against real Fireworks, set the upstream key in the environment and pass a tenant file. The caller's virtual key is never forwarded.
 
 ```bash
-./bin/firerouter
+export FIREWORKS_API_KEY=your-fireworks-key
+./bin/firerouter -upstream https://api.fireworks.ai/inference -keys keys.json
 ```
+
+The proxy then calls `https://api.fireworks.ai/inference/v1/chat/completions`. The same process also forwards `POST /v1/completions`, `POST /v1/embeddings`, and `GET /v1/models`.
+
+## Benchmarks
+
+Measured 14 Nov 2026, 4:27 PM to 4:34 PM Pacific. Load generator, proxy, and mock ran on one machine, so this does not include a network hop between the tester and the proxy.
+
+Hardware: KVM, Linux 6.12.113+, 4 vCPU `Intel(R) Xeon(R) Processor` (family 6, model 207, 1 thread per core), about 16 GB RAM, Go 1.22.2 linux/amd64.
+
+Method: the mock waits 200 ms, then sends 50 tokens 20 ms apart. Loadgen sends 20 requests per second for 30 seconds after a 10 second warmup, concurrency 64. Five direct trials and five proxy trials, alternating. Every trial recorded 600 requests, 0 errors, and 0 responses with status 429. Time to first token is send until the first `data:` line. Percentiles are from an HdrHistogram with 3 significant figures (about 0.128 ms steps near 201 ms). Overhead is the proxy median minus the direct median. Request and token budgets were raised (`-rpm 1000000 -tpm 100000000`) so a rejection would not look like proxy delay. No tenant key file was used.
+
+|  | Direct median | Proxy median | Overhead |
+|---|---:|---:|---:|
+| p50 | 200.703 ms | 200.831 ms | 0.128 ms |
+| p90 | 201.343 ms | 201.471 ms | 0.128 ms |
+| p99 | 201.599 ms | 201.727 ms | 0.128 ms |
+| p99.9 | 201.599 ms | 201.855 ms | 0.256 ms |
+
+The direct p50 was 200.703 ms on all five trials. The proxy p50 was 200.831 ms on four trials and 200.959 ms on one. The gap between tokens was about 20.6 ms on both paths. Full notes are in [docs/benchmark.md](docs/benchmark.md).
 
 ```bash
-curl -N -X POST localhost:8080/v1/chat/completions \
-  -H 'Content-Type: application/json' \
-  -d '{"model":"test","stream":true,"messages":[{"role":"user","content":"hi"}]}'
+./bench/run_bench.sh
+python3 bench/analyze.py bench/results
 ```
 
-`-N` makes curl print each token as it arrives. Leave out `"stream": true` for one JSON answer instead of a stream. The same proxy also forwards `POST /v1/completions`, `POST /v1/embeddings`, and `GET /v1/models`.
+## Architecture
 
-`-inject-usage` is off unless you set it. When it is on, a streamed chat is forwarded with `stream_options.include_usage` set to true. The upstream then sends one extra usage chunk after the words, and the token refund uses that count. When the flag is off, the refund stays at the estimate made before the call, and the client does not get that extra chunk from FireRouter.
-
-```bash
-./bin/firerouter -inject-usage
+```mermaid
+flowchart LR
+  Client --> Auth
+  Auth --> RateLimit[Rate limit]
+  RateLimit --> Router
+  Router --> Breaker
+  Breaker --> Upstream
 ```
 
-### Real Fireworks
+Auth checks the virtual key before the body is read. The rate limiter reserves a token estimate. The router lists the requested model, then its fallbacks. The breaker skips a model that has been failing. The upstream call uses one shared HTTP client for the life of the process.
 
-`FIREWORKS_API_KEY` is optional. When it is set, that is the only `Authorization` value sent upstream. The caller's key is never forwarded, whether or not the variable is set.
+SSE is copied one read at a time and flushed on every chunk. The body is not accumulated, and the client does not compress the stream, because either one would hold tokens until a buffer filled. If the client disconnects, the upstream request is cancelled. More detail is in [docs/architecture.md](docs/architecture.md).
 
-```bash
-export FIREWORKS_API_KEY=your-key
-./bin/firerouter -upstream https://api.fireworks.ai/inference
-```
+## Configuration
 
-```bash
-curl -N -X POST localhost:8080/v1/chat/completions \
-  -H 'Content-Type: application/json' \
-  -d '{"model":"accounts/fireworks/models/llama-v3p1-8b-instruct","stream":true,"messages":[{"role":"user","content":"hi"}]}'
-```
+| Flag | Default | Meaning |
+|---|---|---|
+| `-listen` | `:8080` | Listen address. Env: `FIREROUTER_LISTEN`. |
+| `-upstream` | `http://localhost:9000` | Upstream base URL. Env: `FIREROUTER_UPSTREAM`. |
+| `-keys` | empty | Tenant file. Empty allows every caller, and `-rpm` / `-tpm` apply to each caller. |
+| `-config` | empty | Fallback file. |
+| `-rpm` | `600` | Requests per minute when no key file is set. |
+| `-tpm` | `200000` | Tokens per minute when no key file is set. |
+| `-inject-usage` | off | On streamed chats, set `stream_options.include_usage` so a refund can use the upstream usage chunk. |
 
-The proxy calls `https://api.fireworks.ai/inference/v1/chat/completions`. The app does not need the real key.
-
-### Tenant keys
-
-`-keys` points at a JSON file. Each tenant has a name, the sha256 hash of a virtual key, a request limit, a token limit, and an optional list of models. A virtual key is `fr-` plus 32 random characters. The file stores the hash, not the key.
+`FIREWORKS_API_KEY`, when set, is the only `Authorization` value sent upstream.
 
 ```bash
 ./bin/firerouter keygen --tenant alice --rpm 600 --tpm 200000
 ```
 
-That prints the key once, then a JSON entry with the hash. Put the entry under `tenants`. The plaintext key is not saved.
+That prints the virtual key once (`fr-` plus 32 random characters) and a JSON entry that stores the sha256 hash. SIGHUP reloads the key file. A file that does not parse leaves the previous keys in place.
 
-```bash
-./bin/firerouter -keys keys.json
-```
+Key file:
 
-A request sends `Authorization: Bearer fr-...`. FireRouter hashes it and looks it up. An unknown or missing key gets 401, and the body is not read. The tenant name is the rate-limit bucket and the `tenant` label on rate-limit rejections. `rpm` and `tpm` in the file are that tenant's limits. `allowed_models`, when set, rejects any other model with 403.
+| Field | Meaning |
+|---|---|
+| `tenants[].name` | Tenant name. Used for the budget and for rate-limit metrics. |
+| `tenants[].key_sha256` | Hex sha256 of the virtual key. |
+| `tenants[].rpm` | Requests per minute for this tenant. |
+| `tenants[].tpm` | Tokens per minute for this tenant. |
+| `tenants[].allowed_models` | Optional. Omitted means every model. An explicit empty list means none. |
 
-SIGHUP reads the file again. Streams that already started keep going. A file that does not parse leaves the previous keys in place.
+See `deploy/keys.example.json`. The sample digest is sha256 of the placeholder `example-not-a-key` and will not authenticate a request.
 
-With no `-keys` file, every caller is allowed, and `-rpm` / `-tpm` apply to each caller. Use a key file when the process holds a real Fireworks key. See `deploy/keys.example.json`. That sample digest is sha256 of the placeholder text `example-not-a-key` and will not authenticate a request. Do not commit real keys.
+Fallback file:
 
-### Fallbacks
-
-`-config` points at a JSON file. Each requested model is tried first. The names under `fallbacks` are tried in order when that model is skipped by its circuit breaker, errors before response headers, or returns a 5xx status. The response header `X-FireRouter-Model` is the model that served. After headers are sent, a mid-stream failure is not retried.
+| Field | Meaning |
+|---|---|
+| `models.<name>.fallbacks` | Models to try, in order, after `<name>`. |
 
 ```json
-{"models":{"big-broken":{"fallbacks":["small"]}}}
+{"models":{"primary":{"fallbacks":["fallback"]}}}
 ```
 
-```bash
-./bin/firerouter -config firerouter.json
-```
+A name with no entry is tried alone. Fallbacks of fallbacks are not followed. The response header `X-FireRouter-Model` is the model that served.
 
-The mock returns 503 when the model name contains `broken`, so `big-broken` is served by `small`.
+Breaker settings are compiled in, not in the file: 30 second window, at least 20 samples, open at a 50% error rate, stay open 15 seconds, then allow 3 probes. Request bodies are capped at 1 MB.
 
-### Metrics
+## Compared with LiteLLM and Portkey
 
-`GET /metrics` is Prometheus text. It reports time-to-first-byte, proxy overhead, active event streams, upstream status codes, rate-limit rejections, requests by the model that served them, and each model's breaker state. Prompts and API keys are not labels.
+FireRouter is a single Go binary aimed at Fireworks streaming latency. The published overhead on this machine is a fraction of a millisecond at the median. LiteLLM and Portkey cover many providers, with budgets, dashboards, and routing features this proxy does not have. FireRouter speaks the Fireworks OpenAI-compatible API only.
 
-```bash
-curl -s localhost:8080/metrics
-```
+## Known limitations
 
-### Load generator
+- Rate limits live in memory in each process. With more than one replica, divide the configured rpm and tpm by the replica count.
+- Fallback happens only before the first response byte. A failure after headers are sent is not retried.
+- A fallback is a different model, so the answer can differ in quality.
 
-`loadgen` sends streaming requests on a fixed rate, without waiting for the previous response. The first `-warmup` (default 10s) is discarded. TTFT is the time from sending the request until the first `data:` line.
+## Contributing
 
-```bash
-./bin/loadgen -url http://127.0.0.1:8080/v1/chat/completions -rate 5 -duration 30s -warmup 10s -concurrency 8 -json loadgen.json
-```
+Issues and pull requests: [github.com/prayaggaonkar/FireRouter](https://github.com/prayaggaonkar/FireRouter). Before sending a change, run `go vet ./...` and `go test -race ./...`.
 
-### Metrics stack
-
-`make demo-up` builds the proxy and the mock from `deploy/Dockerfile` and starts the stack in `deploy/docker-compose.yml`. The proxy uses the mock, `deploy/demo-keys.json` (tenants `noisy` and `quiet`), and `deploy/demo-router.json` (`primary` falls back to `fallback`). Prometheus scrapes `/metrics` every second. Grafana on port 3000 loads the Prometheus datasource and `deploy/grafana/firerouter.json` with anonymous viewing. `./demo/demo.sh` walks four acts against that stack: the OpenAI SDK direct and through the proxy, a 20s loadgen comparison, primary failover, and the noisy tenant hitting 429s while quiet keeps succeeding. The keys in `deploy/demo.env` match `deploy/demo-keys.json`. A root `.env` overrides them. The mock admin token defaults to `demo`. `make demo-up` also installs the pinned OpenAI package into `demo/.venv`.
-
-`make demo-down` stops the stack, including the load profile. The load generator is not part of `demo-up`. Run it with `docker compose --env-file .env -f deploy/docker-compose.yml --profile load up loadgen`. It sends the noisy key from `NOISY_API_KEY` in `.env` and asks for model `primary`. The image is distroless and runs as nonroot. Pass `--build-arg VERSION=...` and `--build-arg GO_VERSION=1.22.2` to stamp the release and the Go toolchain. This compose file is for a laptop.
-
-How the pieces fit is in [docs/architecture.md](docs/architecture.md). A measured overhead run is in [docs/benchmark.md](docs/benchmark.md).
+This repository has no license file. All rights reserved until one is added.
