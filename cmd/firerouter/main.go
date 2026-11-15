@@ -19,6 +19,9 @@ import (
 	"github.com/prayaggaonkar/firerouter/internal/router"
 )
 
+// version is replaced by the image build: -ldflags "-X main.version=...".
+var version = "dev"
+
 func main() {
 	listen := flag.String("listen", envOr("FIREROUTER_LISTEN", ":8080"), "listen address")
 	upstream := flag.String("upstream", envOr("FIREROUTER_UPSTREAM", "http://localhost:9000"), "upstream base URL")
@@ -79,8 +82,8 @@ func main() {
 
 	errCh := make(chan error, 1)
 	go func() {
-		log.Printf("listening on %s, upstream %s, rpm %d, tpm %d%s%s%s%s",
-			*listen, *upstream, *rpm, *tpm, configNote(*configPath), keysNote(*keysPath), keyNote(apiKey), usageNote(*injectUsage))
+		log.Printf("firerouter %s listening on %s, upstream %s, rpm %d, tpm %d%s%s%s%s",
+			version, *listen, *upstream, *rpm, *tpm, configNote(*configPath), keysNote(*keysPath), keyNote(apiKey), usageNote(*injectUsage))
 		errCh <- srv.ListenAndServe()
 	}()
 
