@@ -18,6 +18,10 @@ coverage.*
 go.work
 go.work.sum
 
+# Compat-suite installs
+compat/python/.venv/
+compat/js/node_modules/
+
 # Secrets and local config
 .env
 .env.*

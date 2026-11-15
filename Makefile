@@ -1,4 +1,4 @@
-.PHONY: build test run-mock run-proxy clean
+.PHONY: build test compat run-mock run-proxy clean
 
 BIN_DIR := bin
 
@@ -11,6 +11,9 @@ build:
 test:
 	go vet ./...
 	go test -race ./...
+
+compat:
+	./compat/run.sh
 
 run-mock: build
 	./$(BIN_DIR)/mockupstream

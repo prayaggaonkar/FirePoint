@@ -1,0 +1,8 @@
+{
+  "name": "firerouter-compat",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "openai": "7.57.0"
+  }
+}
