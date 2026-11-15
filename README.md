@@ -32,6 +32,12 @@ curl -N -X POST localhost:8080/v1/chat/completions \
 
 `-N` makes curl print each token as it arrives. Leave out `"stream": true` for one JSON answer instead of a stream. The same proxy also forwards `POST /v1/completions`, `POST /v1/embeddings`, and `GET /v1/models`.
 
+`-inject-usage` is off unless you set it. When it is on, a streamed chat is forwarded with `stream_options.include_usage` set to true. The upstream then sends one extra usage chunk after the words, and the token refund uses that count. When the flag is off, the refund stays at the estimate made before the call, and the client does not get that extra chunk from FireRouter.
+
+```bash
+./bin/firerouter -inject-usage
+```
+
 ### Real Fireworks
 
 `FIREWORKS_API_KEY` is optional. When it is set, FireRouter sends that key upstream and ignores any `Authorization` header from the app.

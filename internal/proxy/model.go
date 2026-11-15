@@ -44,6 +44,28 @@ func bodyForModel(body []byte, model string) ([]byte, error) {
 	return replaceTopLevelValue(body, "model", encoded)
 }
 
+// injectIncludeUsage sets stream_options.include_usage to true when the client
+// asked for a stream. Other fields stay as sent. A non-stream body is unchanged,
+// so a caller who did not ask for tokens does not suddenly get a usage object.
+func injectIncludeUsage(body []byte) ([]byte, error) {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(body, &obj); err != nil {
+		return nil, err
+	}
+	if !bytes.Equal(bytes.TrimSpace(obj["stream"]), []byte("true")) {
+		return body, nil
+	}
+	raw := bytes.TrimSpace(obj["stream_options"])
+	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
+		return replaceTopLevelValue(body, "stream_options", []byte(`{"include_usage":true}`))
+	}
+	updated, err := replaceTopLevelValue(raw, "include_usage", []byte("true"))
+	if err != nil {
+		return nil, err
+	}
+	return replaceTopLevelValue(body, "stream_options", updated)
+}
+
 // marshalJSONString encodes one JSON string without HTML escapes, so a model
 // name is written as the client would write it.
 func marshalJSONString(s string) ([]byte, error) {

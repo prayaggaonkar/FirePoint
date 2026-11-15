@@ -26,6 +26,7 @@ func main() {
 	keysPath := flag.String("keys", "", "JSON file of tenant API keys; empty allows every caller")
 	rpm := flag.Int("rpm", 600, "requests per minute for one client")
 	tpm := flag.Int("tpm", 200000, "tokens per minute for one client")
+	injectUsage := flag.Bool("inject-usage", false, "on streamed chats, ask the upstream for a usage chunk so token refunds use the real count")
 	flag.Parse()
 
 	// Trim so a trailing newline in the env value does not become part of the key.
@@ -50,6 +51,7 @@ func main() {
 		handler.SetKeys(keys)
 	}
 	handler.SetLimiter(*rpm, *tpm)
+	handler.SetInjectUsage(*injectUsage)
 	// One breaker per model, so an open primary does not block its fallback.
 	handler.SetBreakers(breaker.NewRegistry(breaker.DefaultConfig()))
 	metrics := observability.New()
@@ -77,8 +79,8 @@ func main() {
 
 	errCh := make(chan error, 1)
 	go func() {
-		log.Printf("listening on %s, upstream %s, rpm %d, tpm %d%s%s%s",
-			*listen, *upstream, *rpm, *tpm, configNote(*configPath), keysNote(*keysPath), keyNote(apiKey))
+		log.Printf("listening on %s, upstream %s, rpm %d, tpm %d%s%s%s%s",
+			*listen, *upstream, *rpm, *tpm, configNote(*configPath), keysNote(*keysPath), keyNote(apiKey), usageNote(*injectUsage))
 		errCh <- srv.ListenAndServe()
 	}()
 
@@ -105,6 +107,13 @@ func configNote(path string) string {
 		return ""
 	}
 	return ", fallbacks " + path
+}
+
+func usageNote(on bool) string {
+	if !on {
+		return ""
+	}
+	return ", inject-usage"
 }
 
 func keysNote(path string) string {

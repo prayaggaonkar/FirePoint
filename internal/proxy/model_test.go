@@ -54,6 +54,43 @@ func TestBodyForModelRewritesOnlyTheName(t *testing.T) {
 	}
 }
 
+func TestInjectIncludeUsageOnlyOnStreams(t *testing.T) {
+	plain := []byte(`{"model":"m","stream":false,"future_field":{"keep":true}}`)
+	got, err := injectIncludeUsage(plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, plain) {
+		t.Fatalf("non-stream body changed: %s", got)
+	}
+
+	in := []byte(`{"model":"m","stream":true,"future_field":{"keep":true},"messages":[{"content":"こんにちは"}]}`)
+	got, err = injectIncludeUsage(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var have map[string]any
+	if err := json.Unmarshal(got, &have); err != nil {
+		t.Fatal(err)
+	}
+	opts, _ := have["stream_options"].(map[string]any)
+	if opts["include_usage"] != true {
+		t.Fatalf("stream_options = %#v", have["stream_options"])
+	}
+	if !strings.Contains(string(got), `"content":"こんにちは"`) || !strings.Contains(string(got), `"future_field":{"keep":true}`) {
+		t.Fatalf("inject rewrote other fields: %s", got)
+	}
+
+	withOpts := []byte(`{"stream":true,"stream_options":{"foo":1}}`)
+	got, err = injectIncludeUsage(withOpts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), `"foo":1`) || !strings.Contains(string(got), `"include_usage":true`) {
+		t.Fatalf("existing stream_options lost a field: %s", got)
+	}
+}
+
 func assertSameJSONExceptModel(t *testing.T, original, got []byte, model string) {
 	t.Helper()
 	var want, have map[string]any

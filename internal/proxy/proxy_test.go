@@ -392,6 +392,7 @@ func TestUsageRefundLetsAnotherRequestThrough(t *testing.T) {
 	// One full reservation plus the tokens that should come back as a refund.
 	// A second call fits only if reserved-actual was returned.
 	h.SetLimiter(10, reserved+actual)
+	h.SetInjectUsage(true)
 	proxy := httptest.NewServer(h)
 	defer proxy.Close()
 

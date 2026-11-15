@@ -3,6 +3,7 @@ package proxy
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -73,6 +74,9 @@ type Handler struct {
 	breaker *breaker.Breaker
 	// metrics is nil in tests that are not checking /metrics.
 	metrics *observability.Metrics
+	// injectUsage asks the upstream for a usage chunk on streamed chats so
+	// the token refund can use the real count. Off by default.
+	injectUsage bool
 	// clock is the time source for latency samples and breaker decisions.
 	clock func() time.Time
 }
@@ -128,6 +132,11 @@ func (h *Handler) SetMetrics(m *observability.Metrics) {
 	h.metrics = m
 }
 
+// SetInjectUsage turns on stream_options.include_usage for streamed requests.
+func (h *Handler) SetInjectUsage(on bool) {
+	h.injectUsage = on
+}
+
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	kind, ok := routeOf(r)
 	if !ok {
@@ -141,6 +150,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, http.StatusUnauthorized, "Invalid API key.", "invalid_api_key")
 		return
 	}
+	// The id is the only request detail written to the log. Prompts and keys stay out.
+	reqID := requestID(r)
+	log.Printf("request %s %s %s", reqID, r.Method, r.URL.Path)
 	// Latency starts when the request is accepted, before the body is read.
 	received := h.now()
 
@@ -184,7 +196,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// cannot switch models: the client may already be reading the body.
 	sawFailure := false
 	for _, model := range h.candidates(requested) {
-		switch h.attempt(w, r, tenant, reserved, model, body, received, kind != routeModels) {
+		switch h.attempt(w, r, tenant, reserved, model, body, received, reqID, kind != routeModels) {
 		case attemptDone:
 			return
 		case attemptFailed:
@@ -216,19 +228,29 @@ const (
 
 // attempt sends one candidate. Headers are the commit point: a 5xx or a dial
 // error can still try the next model, and anything else is streamed as-is.
-func (h *Handler) attempt(w http.ResponseWriter, r *http.Request, tenant string, reserved int, model string, body []byte, received time.Time, rewriteModel bool) attemptResult {
+func (h *Handler) attempt(w http.ResponseWriter, r *http.Request, tenant string, reserved int, model string, body []byte, received time.Time, reqID string, rewriteModel bool) attemptResult {
 	defer h.recordBreaker(model)
 	report, err := h.allow(model)
 	if err != nil {
 		// Ask before dialing. An open breaker fails in this process instead of
 		// making the client wait out an upstream timeout.
-		log.Printf("model %s skipped: circuit breaker open", model)
+		log.Printf("request %s model %s skipped: circuit breaker open", reqID, model)
 		return attemptSkipped
 	}
 	payload := body
 	if rewriteModel {
 		var err error
 		payload, err = bodyForModel(body, model)
+		if err != nil {
+			report(breaker.Ignored)
+			h.refundTokens(tenant, reserved)
+			writeOpenAIError(w, http.StatusBadRequest, "invalid request body", "invalid_request_error")
+			return attemptDone
+		}
+	}
+	if h.injectUsage && len(payload) > 0 {
+		var err error
+		payload, err = injectIncludeUsage(payload)
 		if err != nil {
 			report(breaker.Ignored)
 			h.refundTokens(tenant, reserved)
@@ -252,7 +274,7 @@ func (h *Handler) attempt(w http.ResponseWriter, r *http.Request, tenant string,
 		writeOpenAIError(w, http.StatusBadGateway, "The upstream request failed.", "server_error")
 		return attemptDone
 	}
-	h.copyRequestHeaders(upReq.Header, r.Header)
+	h.copyRequestHeaders(upReq.Header, r.Header, reqID)
 	upReq.ContentLength = int64(len(payload))
 
 	// Stamp the send before Do returns. Do blocks on upstream headers, and
@@ -265,7 +287,7 @@ func (h *Handler) attempt(w http.ResponseWriter, r *http.Request, tenant string,
 			report(breaker.Ignored)
 			return attemptDone
 		}
-		log.Printf("upstream model %s: %v", model, err)
+		log.Printf("request %s upstream model %s: %v", reqID, model, err)
 		// A dial error or a timeout before headers means this model is down.
 		h.metrics.UpstreamStatus("error")
 		report(breaker.Failed)
@@ -275,15 +297,15 @@ func (h *Handler) attempt(w http.ResponseWriter, r *http.Request, tenant string,
 	outcome := upstreamOutcome(resp.StatusCode)
 	if outcome == breaker.Failed {
 		// Headers never reached the client, so another candidate can still serve.
-		log.Printf("upstream model %s: status %d", model, resp.StatusCode)
+		log.Printf("request %s upstream model %s: status %d", reqID, model, resp.StatusCode)
 		report(breaker.Failed)
 		discardBody(resp.Body)
 		return attemptFailed
 	}
-	// Status is known before the body is copied, so the stream loop stays a
-	// straight read, write, and flush.
+	// 429 is Backoff, not a failure: the body and Retry-After go to the client,
+	// and another model is not tried.
 	report(outcome)
-	h.forward(w, r, resp, model, tenant, reserved, received, sent)
+	h.forward(w, r, resp, model, tenant, reserved, received, sent, reqID)
 	return attemptDone
 }
 
@@ -320,7 +342,7 @@ func (h *Handler) candidates(model string) []string {
 	return h.router.Candidates(model)
 }
 
-func (h *Handler) forward(w http.ResponseWriter, r *http.Request, resp *http.Response, model, tenant string, reserved int, received, sent time.Time) {
+func (h *Handler) forward(w http.ResponseWriter, r *http.Request, resp *http.Response, model, tenant string, reserved int, received, sent time.Time, reqID string) {
 	defer resp.Body.Close()
 
 	streaming := isEventStream(resp.Header.Get("Content-Type"))
@@ -339,6 +361,9 @@ func (h *Handler) forward(w http.ResponseWriter, r *http.Request, resp *http.Res
 	if model != modelsBreaker {
 		w.Header().Set(servedModelHeader, model)
 	}
+	if reqID != "" {
+		w.Header().Set("X-FireRouter-Request-ID", reqID)
+	}
 	w.WriteHeader(resp.StatusCode)
 
 	var mark byteTimes
@@ -350,8 +375,13 @@ func (h *Handler) forward(w http.ResponseWriter, r *http.Request, resp *http.Res
 	if err != nil && r.Context().Err() == nil && !errors.Is(err, context.Canceled) {
 		log.Printf("streaming response: %v", err)
 	}
-	if actual, ok := actualTokens(tail); ok {
-		h.refundTokens(tenant, reserved-actual)
+	// With usage injection the upstream sends a real count, so the estimate can
+	// be corrected. Without it the reserved estimate stands, even if a usage
+	// object happens to be in the body.
+	if h.injectUsage {
+		if actual, ok := actualTokens(tail); ok {
+			h.refundTokens(tenant, reserved-actual)
+		}
 	}
 }
 
@@ -387,7 +417,7 @@ func (h *Handler) upstreamRequestURL(r *http.Request) (string, error) {
 // which describe this connection rather than the chat request.
 // The gateway key, when configured, replaces the client Authorization header.
 // The key itself is never logged.
-func (h *Handler) copyRequestHeaders(dst, src http.Header) {
+func (h *Handler) copyRequestHeaders(dst, src http.Header, requestID string) {
 	for _, name := range []string{"Content-Type", "Accept"} {
 		if v := src.Get(name); v != "" {
 			dst.Set(name, v)
@@ -400,6 +430,29 @@ func (h *Handler) copyRequestHeaders(dst, src http.Header) {
 	if v := src.Get("Authorization"); v != "" {
 		dst.Set("Authorization", v)
 	}
+	if requestID != "" {
+		dst.Set("X-Request-ID", requestID)
+	}
+}
+
+// requestID keeps a caller-supplied X-Request-ID. Otherwise it makes one.
+// Newlines are removed so the value cannot forge extra log lines.
+func requestID(r *http.Request) string {
+	id := strings.TrimSpace(r.Header.Get("X-Request-ID"))
+	id = strings.Map(func(c rune) rune {
+		if c == '\n' || c == '\r' {
+			return -1
+		}
+		return c
+	}, id)
+	if id != "" {
+		return id
+	}
+	var buf [16]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		return hex.EncodeToString([]byte(strconv.FormatInt(time.Now().UnixNano(), 16)))
+	}
+	return hex.EncodeToString(buf[:])
 }
 
 func isEventStream(contentType string) bool {
