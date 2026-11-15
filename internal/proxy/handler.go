@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/prayaggaonkar/firerouter/internal/auth"
 	"github.com/prayaggaonkar/firerouter/internal/breaker"
 	"github.com/prayaggaonkar/firerouter/internal/observability"
 	"github.com/prayaggaonkar/firerouter/internal/ratelimit"
@@ -46,6 +47,10 @@ type Handler struct {
 	// limiter is per client. It stays nil in tests that are not checking
 	// quotas. The process always sets one before serving traffic.
 	limiter *ratelimit.Limiter
+	// keys, when set, requires a known Bearer key and names the tenant.
+	// Nil keeps the open mode used by local tests: any caller is allowed,
+	// and the tenant id is a hash of whatever Authorization header they sent.
+	keys *auth.Store
 	// router lists fallbacks. Nil means the requested model is the only try.
 	router *router.Router
 	// breakers is one circuit per model. Nil falls through to breaker.
@@ -89,9 +94,15 @@ func (h *Handler) SetBreakers(reg *breaker.Registry) {
 }
 
 // SetLimiter turns on per-client limits. requestsPerMinute and tokensPerMinute
-// are the burst and the sustained rate for one Authorization value.
+// are the burst and the sustained rate for one tenant.
 func (h *Handler) SetLimiter(requestsPerMinute, tokensPerMinute int) {
 	h.limiter = ratelimit.NewLimiter(requestsPerMinute, tokensPerMinute)
+}
+
+// SetKeys requires a key from the store. The tenant name in that file is the
+// rate-limit bucket. Nil leaves the proxy open.
+func (h *Handler) SetKeys(keys *auth.Store) {
+	h.keys = keys
 }
 
 // SetBreaker installs the upstream circuit breaker.
@@ -108,6 +119,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	// Check the key before reading the body so a stranger's prompt is never stored.
+	tenant, ok := h.authenticate(r.Header.Get("Authorization"))
+	if !ok {
+		writeOpenAIError(w, http.StatusUnauthorized, "Invalid API key.", "invalid_api_key")
 		return
 	}
 	// Latency starts when the request is accepted, before the body is read.
@@ -128,9 +145,6 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The raw credential is the tenant id. Only its hash is kept, so a limit
-	// bucket cannot be turned back into a key and nothing here is logged.
-	tenant := tenantID(r.Header.Get("Authorization"))
 	reserved := 0
 	if h.limiter != nil {
 		reserved = ratelimit.EstimateTokens(body)
@@ -441,9 +455,16 @@ func (h *Handler) refundTokens(tenant string, tokens int) {
 	h.limiter.Refund(tenant, tokens)
 }
 
-func tenantID(authorization string) string {
+// authenticate names the tenant. With a key file, only a listed Bearer key
+// passes, and the name is the one in the file. Without a key file, every
+// caller passes and the name is a hash of the header so two callers do not
+// share a budget and the raw header is not kept.
+func (h *Handler) authenticate(authorization string) (string, bool) {
+	if h.keys != nil {
+		return h.keys.Tenant(authorization)
+	}
 	sum := sha256.Sum256([]byte(authorization))
-	return hex.EncodeToString(sum[:])
+	return hex.EncodeToString(sum[:]), true
 }
 
 func writeRateLimited(w http.ResponseWriter, retryAfter time.Duration) {

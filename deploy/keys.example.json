@@ -1,0 +1,5 @@
+{
+  "tenants": [
+    {"id": "local", "key": "replace-me"}
+  ]
+}

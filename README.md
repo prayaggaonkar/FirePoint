@@ -49,6 +49,14 @@ curl -N -X POST localhost:8080/v1/chat/completions \
 
 The proxy calls `https://api.fireworks.ai/inference/v1/chat/completions`. The app does not need the real key.
 
+### Tenant keys
+
+`-keys` points at a JSON file. Each entry is a tenant name and the secret that tenant's app sends as `Authorization: Bearer <key>`. An unknown key gets 401, and the prompt is not read. The tenant name is the rate-limit bucket. With no `-keys` file, every caller is allowed. Use a key file when the process holds a real Fireworks key. See `deploy/keys.example.json`. Do not commit real keys.
+
+```bash
+./bin/firerouter -keys keys.json
+```
+
 ### Fallbacks
 
 `-config` points at a JSON file. Each requested model is tried first. The names under `fallbacks` are tried in order when that model is skipped by its circuit breaker, errors before response headers, or returns a 5xx status. The response header `X-FireRouter-Model` is the model that served. After headers are sent, a mid-stream failure is not retried.
@@ -78,3 +86,9 @@ curl -s localhost:8080/metrics
 ```bash
 ./bin/loadgen -url http://127.0.0.1:8080/v1/chat/completions -rate 5 -duration 30s -warmup 10s -concurrency 8 -json loadgen.json
 ```
+
+### Metrics stack
+
+`docker compose up` builds the proxy and the mock, then starts Prometheus on port 9090 and Grafana on port 3000. Grafana's user and password are both `admin`. The FireRouter dashboard is already loaded. This compose file is for a laptop.
+
+How the pieces fit is in [docs/architecture.md](docs/architecture.md). A measured overhead run is in [docs/benchmark.md](docs/benchmark.md).

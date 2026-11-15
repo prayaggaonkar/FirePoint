@@ -1,0 +1,86 @@
+{
+  "uid": "firerouter",
+  "title": "FireRouter",
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "refresh": "5s",
+  "time": {"from": "now-15m", "to": "now"},
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Time to first byte (seconds)",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(firerouter_ttft_seconds_bucket[1m])))",
+          "legendFormat": "p50"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(firerouter_ttft_seconds_bucket[1m])))",
+          "legendFormat": "p99"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Proxy overhead (seconds)",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(firerouter_proxy_overhead_seconds_bucket[1m])))",
+          "legendFormat": "p50"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(firerouter_proxy_overhead_seconds_bucket[1m])))",
+          "legendFormat": "p99"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Active streams",
+      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 8},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "firerouter_active_streams", "legendFormat": "streams"}]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Rate limit rejections",
+      "gridPos": {"h": 4, "w": 6, "x": 6, "y": 8},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "firerouter_ratelimit_rejections_total", "legendFormat": "rejected"}]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Upstream responses",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {
+          "expr": "sum by (status) (rate(firerouter_upstream_status_total[1m]))",
+          "legendFormat": "{{status}}"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Breaker state (0 closed, 1 open, 2 half-open)",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 12},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {
+          "expr": "firerouter_breaker_state",
+          "legendFormat": "{{model}}"
+        }
+      ]
+    }
+  ]
+}

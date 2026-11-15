@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/prayaggaonkar/firerouter/internal/auth"
 	"github.com/prayaggaonkar/firerouter/internal/breaker"
 	"github.com/prayaggaonkar/firerouter/internal/observability"
 	"github.com/prayaggaonkar/firerouter/internal/proxy"
@@ -22,6 +23,7 @@ func main() {
 	listen := flag.String("listen", envOr("FIREROUTER_LISTEN", ":8080"), "listen address")
 	upstream := flag.String("upstream", envOr("FIREROUTER_UPSTREAM", "http://localhost:9000"), "upstream base URL")
 	configPath := flag.String("config", "", "JSON file of model fallbacks")
+	keysPath := flag.String("keys", "", "JSON file of tenant API keys; empty allows every caller")
 	rpm := flag.Int("rpm", 600, "requests per minute for one client")
 	tpm := flag.Int("tpm", 200000, "tokens per minute for one client")
 	flag.Parse()
@@ -39,6 +41,13 @@ func main() {
 			log.Fatal(err)
 		}
 		handler.SetRouter(rt)
+	}
+	if *keysPath != "" {
+		keys, err := auth.Load(*keysPath)
+		if err != nil {
+			log.Fatal(err)
+		}
+		handler.SetKeys(keys)
 	}
 	handler.SetLimiter(*rpm, *tpm)
 	// One breaker per model, so an open primary does not block its fallback.
@@ -65,8 +74,8 @@ func main() {
 
 	errCh := make(chan error, 1)
 	go func() {
-		log.Printf("listening on %s, upstream %s, rpm %d, tpm %d%s%s",
-			*listen, *upstream, *rpm, *tpm, configNote(*configPath), keyNote(apiKey))
+		log.Printf("listening on %s, upstream %s, rpm %d, tpm %d%s%s%s",
+			*listen, *upstream, *rpm, *tpm, configNote(*configPath), keysNote(*keysPath), keyNote(apiKey))
 		errCh <- srv.ListenAndServe()
 	}()
 
@@ -93,6 +102,13 @@ func configNote(path string) string {
 		return ""
 	}
 	return ", fallbacks " + path
+}
+
+func keysNote(path string) string {
+	if path == "" {
+		return ""
+	}
+	return ", tenant keys " + path
 }
 
 func keyNote(apiKey string) string {
