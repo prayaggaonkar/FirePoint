@@ -32,6 +32,12 @@ Apps send requests to FireRouter instead of Fireworks directly.
   saying a task is done.
 - Keep functions small. Comment WHY, not what. The author is new to Go, so
   prefer clear code over clever code.
+- Request bodies are forwarded as raw JSON. Parse only the fields we need
+  (model, stream, max_tokens, messages for estimation). Never drop or
+  reorder unknown fields.
+- When rewriting the model field for fallback, change only that field.
+- Every new endpoint goes through the same auth, rate limit, breaker and
+  transport as chat completions.
 
 ## Working style
 - Do exactly what the current prompt asks. Do not build ahead.
