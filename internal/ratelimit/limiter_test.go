@@ -64,6 +64,27 @@ func TestLimiterRetryAfterMatchesRefill(t *testing.T) {
 	}
 }
 
+func TestAllowTenantKeepsBalanceWhenRatesRepeat(t *testing.T) {
+	now := time.Unix(0, 0)
+	l := NewLimiter(1, 1)
+	if ok, _ := l.AllowTenant("alice", 1, 100, 1, now); !ok {
+		t.Fatal("first request")
+	}
+	// The same rates on the next call must not refill the burst.
+	if ok, _ := l.AllowTenant("alice", 1, 100, 1, now); ok {
+		t.Fatal("repeating the tenant rates refilled the bucket")
+	}
+	if ok, _ := l.AllowTenant("bob", 2, 100, 1, now); !ok {
+		t.Fatal("bob should have his own burst")
+	}
+	if ok, _ := l.AllowTenant("bob", 2, 100, 1, now); !ok {
+		t.Fatal("bob's rpm is 2")
+	}
+	if ok, _ := l.AllowTenant("bob", 2, 100, 1, now); ok {
+		t.Fatal("bob exceeded rpm 2")
+	}
+}
+
 func TestTenantsHaveSeparateBuckets(t *testing.T) {
 	now := time.Unix(0, 0)
 	l := NewLimiter(1, 100)

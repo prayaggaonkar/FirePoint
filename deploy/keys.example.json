@@ -1,5 +1,11 @@
 {
   "tenants": [
-    {"id": "local", "key": "replace-me"}
+    {
+      "name": "local",
+      "key_sha256": "fb49e66ef7882045a9d9f4fa75bdd712f4696e87770d04d51195ae9e1a0d506b",
+      "rpm": 600,
+      "tpm": 200000,
+      "allowed_models": ["accounts/fireworks/models/llama-v3p1-8b-instruct"]
+    }
   ]
 }

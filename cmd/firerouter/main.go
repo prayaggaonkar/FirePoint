@@ -20,10 +20,17 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "keygen" {
+		if err := keygen(os.Args[2:]); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
+
 	listen := flag.String("listen", envOr("FIREROUTER_LISTEN", ":8080"), "listen address")
 	upstream := flag.String("upstream", envOr("FIREROUTER_UPSTREAM", "http://localhost:9000"), "upstream base URL")
 	configPath := flag.String("config", "", "JSON file of model fallbacks")
-	keysPath := flag.String("keys", "", "JSON file of tenant API keys; empty allows every caller")
+	keysPath := flag.String("keys", "", "JSON file of tenant key hashes; empty allows every caller")
 	rpm := flag.Int("rpm", 600, "requests per minute for one client")
 	tpm := flag.Int("tpm", 200000, "tokens per minute for one client")
 	injectUsage := flag.Bool("inject-usage", false, "on streamed chats, ask the upstream for a usage chunk so token refunds use the real count")
@@ -85,21 +92,43 @@ func main() {
 	}()
 
 	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 
-	select {
-	case err := <-errCh:
-		if err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Fatal(err)
-		}
-	case <-sig:
-		// Drain in-flight streams, then stop. 30s is the maximum wait.
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		if err := srv.Shutdown(ctx); err != nil {
-			log.Printf("shutdown: %v", err)
+	for {
+		select {
+		case err := <-errCh:
+			if err != nil && !errors.Is(err, http.ErrServerClosed) {
+				log.Fatal(err)
+			}
+			return
+		case s := <-sig:
+			if s == syscall.SIGHUP {
+				// Reload swaps the key map. Shutdown is not called, so
+				// streams that already started keep their connection.
+				reloadKeys(handler, *keysPath)
+				continue
+			}
+			// Drain in-flight streams, then stop. 30s is the maximum wait.
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if err := srv.Shutdown(ctx); err != nil {
+				log.Printf("shutdown: %v", err)
+			}
+			return
 		}
 	}
+}
+
+func reloadKeys(h *proxy.Handler, path string) {
+	if path == "" {
+		log.Print("SIGHUP: no key file to reload")
+		return
+	}
+	if err := h.ReloadKeys(path); err != nil {
+		log.Printf("SIGHUP: key reload failed: %v", err)
+		return
+	}
+	log.Printf("SIGHUP: reloaded tenant keys from %s", path)
 }
 
 func configNote(path string) string {
