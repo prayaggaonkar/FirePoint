@@ -100,6 +100,7 @@ SSE is copied one read at a time and flushed on every chunk. The body is not acc
 | `-rpm` | `600` | Requests per minute when no key file is set. |
 | `-tpm` | `200000` | Tokens per minute when no key file is set. |
 | `-inject-usage` | off | On streamed chats, set `stream_options.include_usage` so a refund can use the upstream usage chunk. |
+| `-version` |  | Print the build version and exit. Set with `-X main.version` or the image `VERSION` build arg. |
 
 `FIREWORKS_API_KEY`, when set, is the only `Authorization` value sent upstream.
 

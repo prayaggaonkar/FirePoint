@@ -46,7 +46,9 @@ const servedModelHeader = "X-FireRouter-Model"
 // is only for the read/write loop; it is not a place to accumulate the body.
 var copyBufPool = sync.Pool{
 	New: func() any {
-		return make([]byte, 16*1024)
+		// A pointer, so Put does not allocate a new slice header.
+		buf := make([]byte, 16*1024)
+		return &buf
 	},
 }
 
@@ -567,8 +569,9 @@ type byteTimes struct {
 // The returned tail is only the last 4 KB, which is where the usage object sits.
 // mark records the first byte only. The flush itself is unchanged.
 func streamBody(dst http.ResponseWriter, src io.Reader, mark *byteTimes, now func() time.Time) ([]byte, error) {
-	buf := copyBufPool.Get().([]byte)
-	defer copyBufPool.Put(buf)
+	bufp := copyBufPool.Get().(*[]byte)
+	defer copyBufPool.Put(bufp)
+	buf := *bufp
 	var tail tailBuf
 	if now == nil {
 		now = time.Now

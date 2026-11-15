@@ -9,7 +9,8 @@ import (
 func TestRegistryKeepsABreakerPerModel(t *testing.T) {
 	r := NewRegistry(DefaultConfig())
 	now := time.Unix(1_700_000_000, 0)
-	if r.Get("big") != r.Get("big") {
+	big := r.Get("big")
+	if big != r.Get("big") {
 		t.Fatal("same model returned two breakers")
 	}
 	if r.Get("big") == r.Get("small") {
