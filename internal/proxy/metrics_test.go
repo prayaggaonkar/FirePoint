@@ -54,6 +54,9 @@ func TestMetricsSeparateOverheadFromUpstreamWait(t *testing.T) {
 	if got := metricValue(t, body, `firerouter_upstream_status_total{status="200"}`); got != 1 {
 		t.Fatalf("status counter %v", got)
 	}
+	if got := metricValue(t, body, `firerouter_requests_total{model="metrics-model"}`); got != 1 {
+		t.Fatalf("served requests %v", got)
+	}
 	if got := metricValue(t, body, `firerouter_breaker_state{model="metrics-model"}`); got != float64(breaker.Closed) {
 		t.Fatalf("breaker state %v", got)
 	}

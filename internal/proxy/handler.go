@@ -390,6 +390,7 @@ func (h *Handler) forward(w http.ResponseWriter, r *http.Request, resp *http.Res
 	// The model list has no model name to report.
 	if model != modelsBreaker {
 		w.Header().Set(servedModelHeader, model)
+		h.metrics.Served(model)
 	}
 	if reqID != "" {
 		w.Header().Set("X-FireRouter-Request-ID", reqID)

@@ -44,7 +44,7 @@ One HTTP client is shared for the life of the process. It reuses connections, al
 
 `GET /healthz` answers `ok`. It does not call the model.
 
-`GET /metrics` is a Prometheus page: time to the first response byte, time the proxy itself added, open streams, upstream status codes, rate-limit rejections, and each model's switch position. Prompts and keys are not labels.
+`GET /metrics` is a Prometheus page: time to the first response byte, time the proxy itself added, open streams, upstream status codes, rate-limit rejections, requests by the model that served them, and each model's switch position. Prompts and keys are not labels.
 
 On SIGHUP the key file is read again and swapped in. Streams that already started are left alone. A file that does not parse keeps the previous keys. On SIGINT or SIGTERM the process stops accepting new calls and waits up to 30 seconds for streams to finish.
 

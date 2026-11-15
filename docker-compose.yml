@@ -38,6 +38,7 @@ services:
       GF_USERS_ALLOW_SIGN_UP: "false"
     volumes:
       - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/grafana/firerouter.json:/etc/grafana/dashboards/firerouter.json:ro
     ports:
       - "3000:3000"
     depends_on:

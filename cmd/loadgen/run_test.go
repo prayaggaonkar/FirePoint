@@ -36,7 +36,7 @@ func TestTTFTStartsAtTheFirstDataLine(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	out := doOne(context.Background(), srv.Client(), srv.URL, time.Now)
+	out := doOne(context.Background(), srv.Client(), srv.URL, "", nil, time.Now)
 	if out.err != nil {
 		t.Fatal(out.err)
 	}
@@ -235,6 +235,36 @@ func TestReportJSON(t *testing.T) {
 	}
 	if got.Status429 != 1 || got.TTFT.P999 != 4 || got.InterToken.P50 != 5 {
 		t.Fatalf("json = %+v", got)
+	}
+}
+
+func TestDoOneSendsKeyAndModel(t *testing.T) {
+	var gotAuth, gotModel string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		var body chatBody
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode body: %v", err)
+		}
+		gotModel = body.Model
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: hi\n\ndata: [DONE]\n\n")
+	}))
+	t.Cleanup(srv.Close)
+
+	payload, err := json.Marshal(chatBody{Model: "primary", Stream: true, Messages: []chatMessage{{Role: "user", Content: "hi"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := doOne(context.Background(), srv.Client(), srv.URL, "fr-test", payload, time.Now)
+	if out.err != nil {
+		t.Fatal(out.err)
+	}
+	if gotAuth != "Bearer fr-test" {
+		t.Fatalf("authorization %q", gotAuth)
+	}
+	if gotModel != "primary" {
+		t.Fatalf("model %q", gotModel)
 	}
 }
 

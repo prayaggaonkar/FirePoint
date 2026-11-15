@@ -19,6 +19,7 @@ type Metrics struct {
 	active         prometheus.Gauge
 	upstreamStatus *prometheus.CounterVec
 	rateLimited    *prometheus.CounterVec
+	served         *prometheus.CounterVec
 	breakerState   *prometheus.GaugeVec
 }
 
@@ -49,12 +50,16 @@ func New() *Metrics {
 			Name: "firerouter_ratelimit_rejections_total",
 			Help: "Requests rejected by the per-client rate limiter.",
 		}, []string{"tenant"}),
+		served: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "firerouter_requests_total",
+			Help: "Responses committed to a client, labeled by the model that served them.",
+		}, []string{"model"}),
 		breakerState: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "firerouter_breaker_state",
 			Help: "Circuit breaker position for one model: 0 closed, 1 open, 2 half-open.",
 		}, []string{"model"}),
 	}
-	reg.MustRegister(m.ttft, m.overhead, m.active, m.upstreamStatus, m.rateLimited, m.breakerState)
+	reg.MustRegister(m.ttft, m.overhead, m.active, m.upstreamStatus, m.rateLimited, m.served, m.breakerState)
 	return m
 }
 
@@ -108,6 +113,15 @@ func (m *Metrics) RateLimited(tenant string) {
 		tenant = "unknown"
 	}
 	m.rateLimited.WithLabelValues(tenant).Inc()
+}
+
+// Served counts one response that was committed to the client.
+// model is the candidate that produced it, not the name the client asked for.
+func (m *Metrics) Served(model string) {
+	if m == nil || model == "" {
+		return
+	}
+	m.served.WithLabelValues(model).Inc()
 }
 
 // SetBreakerState records the breaker position for model.

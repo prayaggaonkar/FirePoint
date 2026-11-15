@@ -1,4 +1,4 @@
-.PHONY: build test compat run-mock run-proxy clean
+.PHONY: build test compat run-mock run-proxy clean demo-up demo-down
 
 BIN_DIR := bin
 
@@ -23,3 +23,11 @@ run-proxy: build
 
 clean:
 	rm -rf $(BIN_DIR)
+
+COMPOSE := docker compose $(if $(wildcard .env),--env-file .env,) -f deploy/docker-compose.yml
+
+demo-up:
+	$(COMPOSE) up --build -d
+
+demo-down:
+	$(COMPOSE) --profile load down --remove-orphans

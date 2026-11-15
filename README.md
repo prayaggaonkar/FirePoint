@@ -101,7 +101,7 @@ The mock returns 503 when the model name contains `broken`, so `big-broken` is s
 
 ### Metrics
 
-`GET /metrics` is Prometheus text. It reports time-to-first-byte, proxy overhead, active event streams, upstream status codes, rate-limit rejections, and each model's breaker state. Prompts and API keys are not labels.
+`GET /metrics` is Prometheus text. It reports time-to-first-byte, proxy overhead, active event streams, upstream status codes, rate-limit rejections, requests by the model that served them, and each model's breaker state. Prompts and API keys are not labels.
 
 ```bash
 curl -s localhost:8080/metrics
@@ -117,6 +117,6 @@ curl -s localhost:8080/metrics
 
 ### Metrics stack
 
-`docker compose up` builds the proxy and the mock from `deploy/Dockerfile`, then starts Prometheus on port 9090 and Grafana on port 3000. The image is distroless and runs as nonroot. Pass `--build-arg VERSION=...` and `--build-arg GO_VERSION=1.22.2` to stamp the release and the Go toolchain. Grafana's user and password are both `admin`. The FireRouter dashboard is already loaded. This compose file is for a laptop.
+`make demo-up` builds the proxy and the mock from `deploy/Dockerfile` and starts the stack in `deploy/docker-compose.yml`. The proxy uses the mock, `deploy/demo-keys.json` (tenants `noisy` and `quiet`), and `deploy/demo-router.json` (`primary` falls back to `fallback`). Prometheus scrapes `/metrics` every second. Grafana on port 3000 loads the Prometheus datasource and `deploy/grafana/firerouter.json` with anonymous viewing. `make demo-down` stops the stack, including the load profile. The load generator is not part of `demo-up`. Run it with `docker compose --env-file .env -f deploy/docker-compose.yml --profile load up loadgen`. It sends the noisy key from `NOISY_API_KEY` in `.env` and asks for model `primary`. The image is distroless and runs as nonroot. Pass `--build-arg VERSION=...` and `--build-arg GO_VERSION=1.22.2` to stamp the release and the Go toolchain. This compose file is for a laptop.
 
 How the pieces fit is in [docs/architecture.md](docs/architecture.md). A measured overhead run is in [docs/benchmark.md](docs/benchmark.md).

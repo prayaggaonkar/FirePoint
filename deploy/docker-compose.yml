@@ -1,0 +1,89 @@
+# Laptop demo. Grafana is anonymous. The key file stores hashes only.
+# Run from the repo root so --env-file .env supplies NOISY_API_KEY.
+# The load profile is separate:
+#   docker compose --env-file .env -f deploy/docker-compose.yml --profile load up loadgen
+
+name: firerouter
+
+services:
+  mockupstream:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    entrypoint: ["mockupstream"]
+    command: ["-addr", ":9000", "-first-token-delay", "50ms", "-token-interval", "10ms", "-tokens", "8"]
+
+  firerouter:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    entrypoint: ["firerouter"]
+    command:
+      - -listen
+      - :8080
+      - -upstream
+      - http://mockupstream:9000
+      - -keys
+      - /config/demo-keys.json
+      - -config
+      - /config/demo-router.json
+    volumes:
+      - ./demo-keys.json:/config/demo-keys.json:ro
+      - ./demo-router.json:/config/demo-router.json:ro
+    ports:
+      - "8080:8080"
+    depends_on:
+      - mockupstream
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    depends_on:
+      - firerouter
+
+  grafana:
+    image: grafana/grafana:11.3.1
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_AUTH_DISABLE_LOGIN_FORM: "false"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /etc/grafana/dashboards/firerouter.json
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/firerouter.json:/etc/grafana/dashboards/firerouter.json:ro
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+
+  loadgen:
+    profiles: ["load"]
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    entrypoint: ["loadgen"]
+    environment:
+      FIREROUTER_API_KEY: ${NOISY_API_KEY:-}
+    command:
+      - -url
+      - http://firerouter:8080/v1/chat/completions
+      - -model
+      - primary
+      - -rate
+      - "5"
+      - -duration
+      - 120s
+      - -warmup
+      - 10s
+      - -concurrency
+      - "8"
+      - -json
+      - /tmp/loadgen.json
+    depends_on:
+      - firerouter

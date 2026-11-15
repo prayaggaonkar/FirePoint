@@ -7,8 +7,20 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 	"time"
 )
+
+type chatMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+type chatBody struct {
+	Model    string        `json:"model"`
+	Stream   bool          `json:"stream"`
+	Messages []chatMessage `json:"messages"`
+}
 
 // version is replaced by the image build: -ldflags "-X main.version=...".
 var version = "dev"
@@ -21,10 +33,19 @@ func main() {
 	warmup := flag.Duration("warmup", 10*time.Second, "initial period whose results are discarded")
 	concurrency := flag.Int("concurrency", 8, "maximum requests in flight")
 	jsonPath := flag.String("json", "loadgen.json", "file for the JSON summary")
+	model := flag.String("model", "mock", "model name in the request body")
+	apiKey := flag.String("api-key", os.Getenv("FIREROUTER_API_KEY"), "virtual key sent as Authorization; empty sends no key")
 	flag.Parse()
 
 	if *rate <= 0 || *duration <= 0 || *concurrency < 1 || *warmup < 0 {
 		log.Fatal("rate and duration must be positive, concurrency at least 1, warmup at least 0")
+	}
+	if strings.TrimSpace(*model) == "" {
+		log.Fatal("model must not be empty")
+	}
+	body, err := json.Marshal(chatBody{Model: *model, Stream: true, Messages: []chatMessage{{Role: "user", Content: "hi"}}})
+	if err != nil {
+		log.Fatal(err)
 	}
 
 	report, err := Run(context.Background(), Config{
@@ -34,6 +55,8 @@ func main() {
 		Warmup:      *warmup,
 		Concurrency: *concurrency,
 		Now:         time.Now,
+		APIKey:      *apiKey,
+		Body:        body,
 	})
 	if err != nil {
 		log.Fatal(err)

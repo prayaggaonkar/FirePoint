@@ -36,6 +36,10 @@ type Config struct {
 	Now         func() time.Time
 	Ticks       <-chan time.Time
 	Client      *http.Client
+	// APIKey is sent as Authorization when set. It is not logged.
+	APIKey string
+	// Body is the request payload. Empty uses the default streaming chat.
+	Body []byte
 }
 
 // Percentiles is one latency distribution in milliseconds.
@@ -122,7 +126,7 @@ loop:
 				go func(discard bool) {
 					defer wg.Done()
 					defer func() { <-sem }()
-					out := doOne(reqCtx, cfg.Client, cfg.URL, cfg.Now)
+					out := doOne(reqCtx, cfg.Client, cfg.URL, cfg.APIKey, cfg.Body, cfg.Now)
 					if discard {
 						return
 					}
@@ -169,13 +173,19 @@ type outcome struct {
 	err    error
 }
 
-func doOne(ctx context.Context, client *http.Client, url string, now func() time.Time) outcome {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(requestBody))
+func doOne(ctx context.Context, client *http.Client, url, apiKey string, body []byte, now func() time.Time) outcome {
+	if len(body) == 0 {
+		body = requestBody
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return outcome{err: err}
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "text/event-stream")
+	if apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
 
 	// TTFT starts as the request goes out, not when status bytes come back.
 	sent := now()

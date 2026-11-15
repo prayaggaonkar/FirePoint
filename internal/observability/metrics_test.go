@@ -35,6 +35,7 @@ func TestHandlerExportsNames(t *testing.T) {
 	m.AddStreams(1)
 	m.UpstreamStatus("200")
 	m.RateLimited("alice")
+	m.Served("small")
 	m.SetBreakerState("small", 0)
 
 	body := scrape(t, m.Handler())
@@ -44,6 +45,7 @@ func TestHandlerExportsNames(t *testing.T) {
 		"firerouter_active_streams 1",
 		`firerouter_upstream_status_total{status="200"} 1`,
 		`firerouter_ratelimit_rejections_total{tenant="alice"} 1`,
+		`firerouter_requests_total{model="small"} 1`,
 		`firerouter_breaker_state{model="small"} 0`,
 	} {
 		if !strings.Contains(body, name) {
@@ -62,6 +64,7 @@ func TestNilMetricsAreSafe(t *testing.T) {
 	m.AddStreams(1)
 	m.UpstreamStatus("200")
 	m.RateLimited("alice")
+	m.Served("m")
 	m.SetBreakerState("m", 1)
 	rr := httptest.NewRecorder()
 	m.Handler().ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/metrics", nil))

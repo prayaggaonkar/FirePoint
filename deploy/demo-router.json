@@ -1,0 +1,7 @@
+{
+  "models": {
+    "primary": {
+      "fallbacks": ["fallback"]
+    }
+  }
+}
