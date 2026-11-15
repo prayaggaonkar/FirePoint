@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -156,6 +157,81 @@ func TestBodyAndAuthorizationPassThrough(t *testing.T) {
 	case <-saw:
 	case <-time.After(time.Second):
 		t.Fatal("upstream did not receive the request")
+	}
+}
+
+func TestUpstreamReceivesUnknownFields(t *testing.T) {
+	var mu sync.Mutex
+	var bodies [][]byte
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read body: %v", err)
+			return
+		}
+		mu.Lock()
+		bodies = append(bodies, got)
+		mu.Unlock()
+		var req struct {
+			Model string `json:"model"`
+		}
+		if err := json.Unmarshal(got, &req); err != nil {
+			t.Errorf("decode: %v", err)
+			return
+		}
+		if strings.Contains(req.Model, "broken") {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"ok":true}`)
+	}))
+	defer upstream.Close()
+
+	proxy := newFallbackProxy(t, upstream.URL, "big-broken", "small")
+	resp := postChat(t, proxy.URL, "", richBody)
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status %d, want 200", resp.StatusCode)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(bodies) != 2 {
+		t.Fatalf("upstream calls = %d, want 2", len(bodies))
+	}
+	assertDecodedEqual(t, []byte(richBody), bodies[0])
+	assertDecodedModel(t, []byte(richBody), bodies[1], "small")
+}
+
+func assertDecodedEqual(t *testing.T, want, got []byte) {
+	t.Helper()
+	var left, right map[string]any
+	if err := json.Unmarshal(want, &left); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(got, &right); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(left, right) {
+		t.Fatalf("upstream body = %#v\nwant %#v", right, left)
+	}
+}
+
+func assertDecodedModel(t *testing.T, original, got []byte, model string) {
+	t.Helper()
+	var want, have map[string]any
+	if err := json.Unmarshal(original, &want); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(got, &have); err != nil {
+		t.Fatal(err)
+	}
+	want["model"] = model
+	if !reflect.DeepEqual(have, want) {
+		t.Fatalf("upstream body = %#v\nwant %#v", have, want)
 	}
 }
 
