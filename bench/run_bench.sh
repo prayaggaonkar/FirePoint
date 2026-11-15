@@ -34,8 +34,15 @@ trap cleanup EXIT
 
 wait_http() {
 	local url=$1
+	local pid=$2
+	local log=$3
 	local i
 	for i in $(seq 1 50); do
+		if ! kill -0 "$pid" 2>/dev/null; then
+			echo "process $pid exited before $url answered" >&2
+			cat "$log" >&2 || true
+			return 1
+		fi
 		if curl -sf "$url" >/dev/null; then
 			return 0
 		fi
@@ -64,8 +71,8 @@ mock_pid=$!
 	>"$OUT/firerouter.log" 2>&1 &
 proxy_pid=$!
 
-wait_http "http://$MOCK_ADDR/healthz"
-wait_http "http://$PROXY_ADDR/healthz"
+wait_http "http://$MOCK_ADDR/healthz" "$mock_pid" "$OUT/mock.log"
+wait_http "http://$PROXY_ADDR/healthz" "$proxy_pid" "$OUT/firerouter.log"
 
 GO_VERSION=$(go version)
 CPU_MODEL=$(awk -F: '/^model name/{gsub(/^ +/, "", $2); print $2; exit}' /proc/cpuinfo)
