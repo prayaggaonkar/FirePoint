@@ -44,6 +44,15 @@ The direct p50 was 200.703 ms on all five trials. The proxy p50 was 200.831 ms o
 
 The gap between tokens was about 20.6 ms on both paths. The proxy median was within one histogram step of the direct median, including two steps where the proxy number was 0.016 ms lower. That is the bucket size, not a claim that the proxy is faster.
 
+## Reproduce
+
+`bench/run_bench.sh` builds the binaries, starts the mock at a 200 ms first-token delay and a 20 ms interval, and runs five paired trials. Each trial is loadgen straight at the mock, then the same rate, duration, and 10 s warmup through FireRouter. One JSON file is written per trial. `bench/analyze.py` prints the median, min, and max of each percentile.
+
+```bash
+./bench/run_bench.sh
+python3 bench/analyze.py bench/results
+```
+
 ## What this does not show
 
 The default load-generator cap is 8 chats at once. At 100 requests per second that cap refuses most of the schedule before it is sent, and the proxy's default budget of 600 requests per minute would reject a real 100 per second after a short burst. Those knobs were opened here so the table is the extra wait on a chat that was actually served.
