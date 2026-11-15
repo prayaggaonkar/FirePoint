@@ -6,3 +6,4 @@ loadgen.json
 .env.*
 compat/python/.venv
 compat/js/node_modules
+demo/.venv
