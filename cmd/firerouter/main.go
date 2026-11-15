@@ -61,6 +61,9 @@ func main() {
 		_, _ = w.Write([]byte("ok\n"))
 	})
 	mux.Handle("POST /v1/chat/completions", handler)
+	mux.Handle("POST /v1/completions", handler)
+	mux.Handle("POST /v1/embeddings", handler)
+	mux.Handle("GET /v1/models", handler)
 	mux.Handle("GET /metrics", metrics.Handler())
 
 	srv := &http.Server{

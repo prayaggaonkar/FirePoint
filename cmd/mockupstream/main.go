@@ -79,6 +79,12 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("ok\n"))
 	case r.Method == http.MethodPost && r.URL.Path == "/v1/chat/completions":
 		h.completions(w, r)
+	case r.Method == http.MethodPost && r.URL.Path == "/v1/completions":
+		h.textCompletions(w, r)
+	case r.Method == http.MethodPost && r.URL.Path == "/v1/embeddings":
+		h.embeddings(w, r)
+	case r.Method == http.MethodGet && r.URL.Path == "/v1/models":
+		h.models(w, r)
 	default:
 		http.NotFound(w, r)
 	}
@@ -183,10 +189,85 @@ func (h *handler) complete(w http.ResponseWriter, r *http.Request, model string)
 		Usage: usageObject(h.cfg.tokens),
 	}
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-Id", "mock-req")
 	w.WriteHeader(http.StatusOK)
 	if err := json.NewEncoder(w).Encode(body); err != nil && r.Context().Err() != nil {
 		log.Print("client disconnected")
 	}
+}
+
+func (h *handler) textCompletions(w http.ResponseWriter, r *http.Request) {
+	model, ok := h.ready(w, r)
+	if !ok {
+		return
+	}
+	writeJSON(w, map[string]any{
+		"id":      "cmpl-mock",
+		"object":  "text_completion",
+		"created": h.now().Unix(),
+		"model":   model,
+		"choices": []map[string]any{{
+			"text":          "ok",
+			"index":         0,
+			"finish_reason": "stop",
+		}},
+	})
+}
+
+func (h *handler) embeddings(w http.ResponseWriter, r *http.Request) {
+	model, ok := h.ready(w, r)
+	if !ok {
+		return
+	}
+	writeJSON(w, map[string]any{
+		"object": "list",
+		"model":  model,
+		"data": []map[string]any{{
+			"object":    "embedding",
+			"index":     0,
+			"embedding": []float64{0.1, 0.2, 0.3},
+		}},
+	})
+}
+
+func (h *handler) models(w http.ResponseWriter, r *http.Request) {
+	if h.shouldFail() {
+		writeError(w, http.StatusServiceUnavailable, "The server is overloaded or not ready yet.", "server_error")
+		return
+	}
+	writeJSON(w, map[string]any{
+		"object": "list",
+		"data": []map[string]any{{
+			"id":       "mock",
+			"object":   "model",
+			"owned_by": "firerouter",
+		}},
+	})
+}
+
+// ready reads the model and applies the same failure rules as chat.
+// Unknown JSON fields are ignored here. The proxy is what must keep them.
+func (h *handler) ready(w http.ResponseWriter, r *http.Request) (string, bool) {
+	var req chatRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body", "invalid_request_error")
+		return "", false
+	}
+	if strings.Contains(req.Model, "broken") || h.shouldFail() {
+		writeError(w, http.StatusServiceUnavailable, "The server is overloaded or not ready yet.", "server_error")
+		return "", false
+	}
+	if req.Model == "" {
+		req.Model = "mock"
+	}
+	return req.Model, true
+}
+
+func writeJSON(w http.ResponseWriter, body any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-Id", "mock-req")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(body)
 }
 
 // wait returns false after the client disconnects. A timer is used instead of

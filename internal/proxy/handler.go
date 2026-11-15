@@ -25,6 +25,18 @@ import (
 
 const maxRequestBody = 1 << 20 // 1 MB
 
+// modelsBreaker is the circuit for GET /v1/models. It is not a model name.
+const modelsBreaker = "/v1/models"
+
+type routeKind int
+
+const (
+	routeChat routeKind = iota
+	routeCompletions
+	routeEmbeddings
+	routeModels
+)
+
 // servedModelHeader names the candidate that produced the committed response.
 const servedModelHeader = "X-FireRouter-Model"
 
@@ -36,8 +48,9 @@ var copyBufPool = sync.Pool{
 	},
 }
 
-// Handler forwards /v1/chat/completions and flushes each chunk as it arrives.
-// A failing candidate is replaced only before response headers are written.
+// Handler forwards chat completions, completions, embeddings, and the model
+// list. A streamed body is flushed as each chunk arrives. A failing candidate
+// is replaced only before response headers are written.
 type Handler struct {
 	upstream *url.URL
 	client   *http.Client
@@ -116,8 +129,9 @@ func (h *Handler) SetMetrics(m *observability.Metrics) {
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		w.Header().Set("Allow", http.MethodPost)
+	kind, ok := routeOf(r)
+	if !ok {
+		w.Header().Set("Allow", allowHeader(r.URL.Path))
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
@@ -130,24 +144,34 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Latency starts when the request is accepted, before the body is read.
 	received := h.now()
 
-	body, err := readRequestBody(w, r)
-	if err != nil {
-		if r.Context().Err() != nil {
+	var body []byte
+	if kind != routeModels {
+		var err error
+		body, err = readRequestBody(w, r)
+		if err != nil {
+			if r.Context().Err() != nil {
+				return
+			}
+			writeOpenAIError(w, http.StatusBadRequest, "invalid request body", "invalid_request_error")
 			return
 		}
-		writeOpenAIError(w, http.StatusBadRequest, "invalid request body", "invalid_request_error")
-		return
 	}
 
-	requested, err := requestedModel(body)
-	if err != nil {
-		writeOpenAIError(w, http.StatusBadRequest, "invalid request body", "invalid_request_error")
-		return
+	// The model list has no model field. Its breaker is the route itself, so
+	// a down list does not open the breaker for a chat model.
+	requested := modelsBreaker
+	if kind != routeModels {
+		var err error
+		requested, err = requestedModel(body)
+		if err != nil {
+			writeOpenAIError(w, http.StatusBadRequest, "invalid request body", "invalid_request_error")
+			return
+		}
 	}
 
 	reserved := 0
 	if h.limiter != nil {
-		reserved = ratelimit.EstimateTokens(body)
+		reserved = estimateTokens(kind, body)
 		ok, retryAfter := h.limiter.Allow(tenant, reserved, h.now())
 		if !ok {
 			h.metrics.RateLimited()
@@ -160,7 +184,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// cannot switch models: the client may already be reading the body.
 	sawFailure := false
 	for _, model := range h.candidates(requested) {
-		switch h.attempt(w, r, tenant, reserved, model, body, received) {
+		switch h.attempt(w, r, tenant, reserved, model, body, received, kind != routeModels) {
 		case attemptDone:
 			return
 		case attemptFailed:
@@ -192,7 +216,7 @@ const (
 
 // attempt sends one candidate. Headers are the commit point: a 5xx or a dial
 // error can still try the next model, and anything else is streamed as-is.
-func (h *Handler) attempt(w http.ResponseWriter, r *http.Request, tenant string, reserved int, model string, body []byte, received time.Time) attemptResult {
+func (h *Handler) attempt(w http.ResponseWriter, r *http.Request, tenant string, reserved int, model string, body []byte, received time.Time, rewriteModel bool) attemptResult {
 	defer h.recordBreaker(model)
 	report, err := h.allow(model)
 	if err != nil {
@@ -201,12 +225,16 @@ func (h *Handler) attempt(w http.ResponseWriter, r *http.Request, tenant string,
 		log.Printf("model %s skipped: circuit breaker open", model)
 		return attemptSkipped
 	}
-	payload, err := bodyForModel(body, model)
-	if err != nil {
-		report(breaker.Ignored)
-		h.refundTokens(tenant, reserved)
-		writeOpenAIError(w, http.StatusBadRequest, "invalid request body", "invalid_request_error")
-		return attemptDone
+	payload := body
+	if rewriteModel {
+		var err error
+		payload, err = bodyForModel(body, model)
+		if err != nil {
+			report(breaker.Ignored)
+			h.refundTokens(tenant, reserved)
+			writeOpenAIError(w, http.StatusBadRequest, "invalid request body", "invalid_request_error")
+			return attemptDone
+		}
 	}
 	target, err := h.upstreamRequestURL(r)
 	if err != nil {
@@ -217,7 +245,7 @@ func (h *Handler) attempt(w http.ResponseWriter, r *http.Request, tenant string,
 	}
 	// The incoming context is cancelled when the client disconnects, which
 	// cancels this upstream call so a closed tab stops the paid request.
-	upReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, target, bytes.NewReader(payload))
+	upReq, err := http.NewRequestWithContext(r.Context(), r.Method, target, bytes.NewReader(payload))
 	if err != nil {
 		report(breaker.Ignored)
 		h.refundTokens(tenant, reserved)
@@ -295,10 +323,10 @@ func (h *Handler) candidates(model string) []string {
 func (h *Handler) forward(w http.ResponseWriter, r *http.Request, resp *http.Response, model, tenant string, reserved int, received, sent time.Time) {
 	defer resp.Body.Close()
 
-	if ct := resp.Header.Get("Content-Type"); ct != "" {
-		w.Header().Set("Content-Type", ct)
-	}
 	streaming := isEventStream(resp.Header.Get("Content-Type"))
+	// Non-streaming responses copy status, ordinary headers, and the body.
+	// Hop-by-hop headers describe this connection and are not forwarded.
+	copySafeResponseHeaders(w.Header(), resp.Header)
 	if streaming {
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("X-Accel-Buffering", "no")
@@ -307,7 +335,10 @@ func (h *Handler) forward(w http.ResponseWriter, r *http.Request, resp *http.Res
 	}
 	// Writing headers commits this model. The body is streamed as it arrives
 	// and is not replaced if the upstream fails halfway through.
-	w.Header().Set(servedModelHeader, model)
+	// The model list has no model name to report.
+	if model != modelsBreaker {
+		w.Header().Set(servedModelHeader, model)
+	}
 	w.WriteHeader(resp.StatusCode)
 
 	var mark byteTimes
@@ -373,6 +404,73 @@ func (h *Handler) copyRequestHeaders(dst, src http.Header) {
 
 func isEventStream(contentType string) bool {
 	return strings.Contains(strings.ToLower(contentType), "text/event-stream")
+}
+
+func routeOf(r *http.Request) (routeKind, bool) {
+	switch {
+	case r.Method == http.MethodPost && r.URL.Path == "/v1/chat/completions":
+		return routeChat, true
+	case r.Method == http.MethodPost && r.URL.Path == "/v1/completions":
+		return routeCompletions, true
+	case r.Method == http.MethodPost && r.URL.Path == "/v1/embeddings":
+		return routeEmbeddings, true
+	case r.Method == http.MethodGet && r.URL.Path == "/v1/models":
+		return routeModels, true
+	default:
+		return 0, false
+	}
+}
+
+func allowHeader(path string) string {
+	if path == "/v1/models" {
+		return http.MethodGet
+	}
+	return http.MethodPost
+}
+
+func estimateTokens(kind routeKind, body []byte) int {
+	if kind == routeEmbeddings {
+		return ratelimit.EstimateEmbeddingTokens(body)
+	}
+	if kind == routeModels {
+		return 0
+	}
+	return ratelimit.EstimateTokens(body)
+}
+
+// hopByHop headers belong to a single connection. Content-Length is left
+// off because the proxy writes the body itself.
+var hopByHop = map[string]struct{}{
+	"connection":          {},
+	"keep-alive":          {},
+	"proxy-authenticate":  {},
+	"proxy-authorization": {},
+	"te":                  {},
+	"trailer":             {},
+	"transfer-encoding":   {},
+	"upgrade":             {},
+	"content-length":      {},
+}
+
+func copySafeResponseHeaders(dst, src http.Header) {
+	named := map[string]struct{}{}
+	for _, item := range src.Values("Connection") {
+		for _, part := range strings.Split(item, ",") {
+			named[strings.ToLower(strings.TrimSpace(part))] = struct{}{}
+		}
+	}
+	for name, values := range src {
+		low := strings.ToLower(name)
+		if _, skip := hopByHop[low]; skip {
+			continue
+		}
+		if _, skip := named[low]; skip {
+			continue
+		}
+		for _, value := range values {
+			dst.Add(name, value)
+		}
+	}
 }
 
 // byteTimes holds the first response byte, taken inside the flush loop.

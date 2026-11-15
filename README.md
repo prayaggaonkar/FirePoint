@@ -30,7 +30,7 @@ curl -N -X POST localhost:8080/v1/chat/completions \
   -d '{"model":"test","stream":true,"messages":[{"role":"user","content":"hi"}]}'
 ```
 
-`-N` makes curl print each token as it arrives.
+`-N` makes curl print each token as it arrives. Leave out `"stream": true` for one JSON answer instead of a stream. The same proxy also forwards `POST /v1/completions`, `POST /v1/embeddings`, and `GET /v1/models`.
 
 ### Real Fireworks
 

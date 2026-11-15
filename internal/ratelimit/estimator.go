@@ -30,6 +30,43 @@ func EstimateTokens(body []byte) int {
 	return chars/4 + 4*len(req.Messages) + maxTokens
 }
 
+// EstimateEmbeddingTokens counts input text at about 4 bytes per token.
+// input may be one string or a list of strings. A list of token numbers
+// uses the raw JSON length, since those items are not text.
+func EstimateEmbeddingTokens(body []byte) int {
+	var req struct {
+		Input json.RawMessage `json:"input"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		return 0
+	}
+	return embeddingInputLen(req.Input) / 4
+}
+
+func embeddingInputLen(raw json.RawMessage) int {
+	if len(raw) == 0 || string(raw) == "null" {
+		return 0
+	}
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil {
+		return len(text)
+	}
+	var parts []json.RawMessage
+	if err := json.Unmarshal(raw, &parts); err != nil {
+		return len(raw)
+	}
+	n := 0
+	for _, part := range parts {
+		var item string
+		if err := json.Unmarshal(part, &item); err == nil {
+			n += len(item)
+			continue
+		}
+		n += len(part)
+	}
+	return n
+}
+
 func contentBytes(raw json.RawMessage) int {
 	if len(raw) == 0 {
 		return 0

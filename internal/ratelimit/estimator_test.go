@@ -49,3 +49,25 @@ func TestEstimateTokens(t *testing.T) {
 		})
 	}
 }
+
+func TestEstimateEmbeddingTokens(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want int
+	}{
+		{name: "string length over 4", body: `{"input":"hello"}`, want: 5 / 4},
+		{name: "eight bytes is two tokens", body: `{"input":"12345678"}`, want: 2},
+		{name: "list of strings adds lengths", body: `{"input":["ab","cd"]}`, want: 1},
+		{name: "empty string is zero", body: `{"input":""}`, want: 0},
+		{name: "missing input is zero", body: `{"model":"m"}`, want: 0},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := EstimateEmbeddingTokens([]byte(tc.body))
+			if got != tc.want {
+				t.Fatalf("EstimateEmbeddingTokens = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
