@@ -11,7 +11,9 @@ services:
       context: ..
       dockerfile: deploy/Dockerfile
     entrypoint: ["mockupstream"]
-    command: ["-addr", ":9000", "-first-token-delay", "50ms", "-token-interval", "10ms", "-tokens", "8"]
+    command: ["-addr", ":9000", "-first-token-delay", "50ms", "-token-interval", "10ms", "-tokens", "8", "-admin-token", "${ADMIN_TOKEN:-demo}"]
+    ports:
+      - "9000:9000"
 
   firerouter:
     build:
