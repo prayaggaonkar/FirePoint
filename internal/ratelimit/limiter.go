@@ -51,10 +51,28 @@ func NewLimiter(requestsPerMinute, tokensPerMinute int) *Limiter {
 	return l
 }
 
-// Allow takes one request token, then the estimated LLM tokens. The token
-// take can fail after the request take succeeded. The request token is
-// returned in that case so a rejected call does not count against RPM.
+// Allow takes one request token, then the estimated LLM tokens, using the
+// limiter's shared rates. The token take can fail after the request take
+// succeeded. The request token is returned in that case so a rejected call
+// does not count against RPM.
 func (l *Limiter) Allow(tenantID string, estimatedTokens int, now time.Time) (ok bool, retryAfter time.Duration) {
+	return l.allow(tenantID, l.rpm, l.tpm, estimatedTokens, now)
+}
+
+// AllowTenant is Allow with the rates from that tenant's key entry.
+// A later call with new rates updates the buckets in place. The balance
+// is not refilled, so a SIGHUP does not grant a fresh burst.
+func (l *Limiter) AllowTenant(tenantID string, rpm, tpm, estimatedTokens int, now time.Time) (ok bool, retryAfter time.Duration) {
+	if rpm < 0 {
+		rpm = 0
+	}
+	if tpm < 0 {
+		tpm = 0
+	}
+	return l.allow(tenantID, float64(rpm), float64(tpm), estimatedTokens, now)
+}
+
+func (l *Limiter) allow(tenantID string, rpm, tpm float64, estimatedTokens int, now time.Time) (ok bool, retryAfter time.Duration) {
 	if estimatedTokens < 0 {
 		estimatedTokens = 0
 	}
@@ -67,10 +85,13 @@ func (l *Limiter) Allow(tenantID string, estimatedTokens int, now time.Time) (ok
 		// A per-minute limit is a per-second drip of limit/60, with a burst
 		// equal to one minute of tokens.
 		t = &tenant{
-			rpm: NewBucket(l.rpm, l.rpm/60, now),
-			tpm: NewBucket(l.tpm, l.tpm/60, now),
+			rpm: NewBucket(rpm, rpm/60, now),
+			tpm: NewBucket(tpm, tpm/60, now),
 		}
 		sh.tenants[tenantID] = t
+	} else {
+		t.rpm.SetRates(rpm, rpm/60)
+		t.tpm.SetRates(tpm, tpm/60)
 	}
 	t.lastSeen = now
 

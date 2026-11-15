@@ -55,6 +55,25 @@ func (b *Bucket) TryTake(n float64, now time.Time) (ok bool, retryAfter time.Dur
 	return true, 0
 }
 
+// SetRates changes the burst and the drip. The current balance is kept,
+// capped at the new burst, so a config reload does not refill the bucket
+// or throw away tokens the tenant still has.
+func (b *Bucket) SetRates(capacity, rate float64) {
+	if capacity < 0 {
+		capacity = 0
+	}
+	if rate < 0 {
+		rate = 0
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.capacity = capacity
+	b.rate = rate
+	if b.tokens > b.capacity {
+		b.tokens = b.capacity
+	}
+}
+
 // Refund puts tokens back. The balance is capped at capacity so a refund
 // cannot raise the burst size. The timestamp is left alone: the next TryTake
 // still applies the refill for the time that passed.

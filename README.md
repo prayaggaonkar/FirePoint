@@ -40,7 +40,7 @@ curl -N -X POST localhost:8080/v1/chat/completions \
 
 ### Real Fireworks
 
-`FIREWORKS_API_KEY` is optional. When it is set, FireRouter sends that key upstream and ignores any `Authorization` header from the app.
+`FIREWORKS_API_KEY` is optional. When it is set, that is the only `Authorization` value sent upstream. The caller's key is never forwarded, whether or not the variable is set.
 
 ```bash
 export FIREWORKS_API_KEY=your-key
@@ -57,11 +57,23 @@ The proxy calls `https://api.fireworks.ai/inference/v1/chat/completions`. The ap
 
 ### Tenant keys
 
-`-keys` points at a JSON file. Each entry is a tenant name and the secret that tenant's app sends as `Authorization: Bearer <key>`. An unknown key gets 401, and the prompt is not read. The tenant name is the rate-limit bucket. With no `-keys` file, every caller is allowed. Use a key file when the process holds a real Fireworks key. See `deploy/keys.example.json`. Do not commit real keys.
+`-keys` points at a JSON file. Each tenant has a name, the sha256 hash of a virtual key, a request limit, a token limit, and an optional list of models. A virtual key is `fr-` plus 32 random characters. The file stores the hash, not the key.
+
+```bash
+./bin/firerouter keygen --tenant alice --rpm 600 --tpm 200000
+```
+
+That prints the key once, then a JSON entry with the hash. Put the entry under `tenants`. The plaintext key is not saved.
 
 ```bash
 ./bin/firerouter -keys keys.json
 ```
+
+A request sends `Authorization: Bearer fr-...`. FireRouter hashes it and looks it up. An unknown or missing key gets 401, and the body is not read. The tenant name is the rate-limit bucket and the `tenant` label on rate-limit rejections. `rpm` and `tpm` in the file are that tenant's limits. `allowed_models`, when set, rejects any other model with 403.
+
+SIGHUP reads the file again. Streams that already started keep going. A file that does not parse leaves the previous keys in place.
+
+With no `-keys` file, every caller is allowed, and `-rpm` / `-tpm` apply to each caller. Use a key file when the process holds a real Fireworks key. See `deploy/keys.example.json`. That sample digest is sha256 of the placeholder text `example-not-a-key` and will not authenticate a request. Do not commit real keys.
 
 ### Fallbacks
 

@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/prayaggaonkar/firerouter/internal/auth"
@@ -55,8 +56,8 @@ var copyBufPool = sync.Pool{
 type Handler struct {
 	upstream *url.URL
 	client   *http.Client
-	// apiKey is the gateway secret. When set, it replaces any client
-	// Authorization header so apps never hold the upstream key.
+	// apiKey is FIREWORKS_API_KEY. It is the only Authorization value ever
+	// sent upstream. The caller's virtual key is not forwarded.
 	apiKey string
 	// limiter is per client. It stays nil in tests that are not checking
 	// quotas. The process always sets one before serving traffic.
@@ -64,7 +65,9 @@ type Handler struct {
 	// keys, when set, requires a known Bearer key and names the tenant.
 	// Nil keeps the open mode used by local tests: any caller is allowed,
 	// and the tenant id is a hash of whatever Authorization header they sent.
-	keys *auth.Store
+	// The pointer is swapped on SIGHUP. A request reads it once, so a reload
+	// does not touch a stream that has already started.
+	keys atomic.Pointer[auth.Store]
 	// router lists fallbacks. Nil means the requested model is the only try.
 	router *router.Router
 	// breakers is one circuit per model. Nil falls through to breaker.
@@ -111,15 +114,28 @@ func (h *Handler) SetBreakers(reg *breaker.Registry) {
 }
 
 // SetLimiter turns on per-client limits. requestsPerMinute and tokensPerMinute
-// are the burst and the sustained rate for one tenant.
+// are the burst and the sustained rate when no key file is loaded. A key
+// file uses the rpm and tpm on each tenant instead.
 func (h *Handler) SetLimiter(requestsPerMinute, tokensPerMinute int) {
 	h.limiter = ratelimit.NewLimiter(requestsPerMinute, tokensPerMinute)
 }
 
 // SetKeys requires a key from the store. The tenant name in that file is the
-// rate-limit bucket. Nil leaves the proxy open.
+// rate-limit bucket and the metrics label. Nil leaves the proxy open.
 func (h *Handler) SetKeys(keys *auth.Store) {
-	h.keys = keys
+	h.keys.Store(keys)
+}
+
+// ReloadKeys reads the key file and swaps it in. A bad file leaves the
+// previous store in place. In-flight requests already copied their tenant
+// and are not interrupted.
+func (h *Handler) ReloadKeys(path string) error {
+	keys, err := auth.Load(path)
+	if err != nil {
+		return err
+	}
+	h.keys.Store(keys)
+	return nil
 }
 
 // SetBreaker installs the upstream circuit breaker.
@@ -145,7 +161,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Check the key before reading the body so a stranger's prompt is never stored.
-	tenant, ok := h.authenticate(r.Header.Get("Authorization"))
+	who, ok := h.authenticate(r.Header.Get("Authorization"))
 	if !ok {
 		writeOpenAIError(w, http.StatusUnauthorized, "Invalid API key.", "invalid_api_key")
 		return
@@ -181,12 +197,22 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if kind != routeModels && !who.allows(requested) {
+		writeCodedError(w, http.StatusForbidden, "The model is not allowed for this API key.", "invalid_request_error", "model_not_allowed")
+		return
+	}
+
 	reserved := 0
 	if h.limiter != nil {
 		reserved = estimateTokens(kind, body)
-		ok, retryAfter := h.limiter.Allow(tenant, reserved, h.now())
+		var retryAfter time.Duration
+		if who.configured {
+			ok, retryAfter = h.limiter.AllowTenant(who.name, who.rpm, who.tpm, reserved, h.now())
+		} else {
+			ok, retryAfter = h.limiter.Allow(who.name, reserved, h.now())
+		}
 		if !ok {
-			h.metrics.RateLimited()
+			h.metrics.RateLimited(who.name)
 			writeRateLimited(w, retryAfter)
 			return
 		}
@@ -194,16 +220,20 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Try each candidate until one answers with headers. A later failure
 	// cannot switch models: the client may already be reading the body.
+	// A fallback the tenant is not allowed to call is skipped.
 	sawFailure := false
 	for _, model := range h.candidates(requested) {
-		switch h.attempt(w, r, tenant, reserved, model, body, received, reqID, kind != routeModels) {
+		if kind != routeModels && !who.allows(model) {
+			continue
+		}
+		switch h.attempt(w, r, who.name, reserved, model, body, received, reqID, kind != routeModels) {
 		case attemptDone:
 			return
 		case attemptFailed:
 			sawFailure = true
 		}
 	}
-	h.refundTokens(tenant, reserved)
+	h.refundTokens(who.name, reserved)
 	if r.Context().Err() != nil {
 		return
 	}
@@ -415,7 +445,8 @@ func (h *Handler) upstreamRequestURL(r *http.Request) (string, error) {
 // copyRequestHeaders forwards the headers the upstream needs and leaves out
 // hop-by-hop headers (Connection, Keep-Alive, Transfer-Encoding, Upgrade),
 // which describe this connection rather than the chat request.
-// The gateway key, when configured, replaces the client Authorization header.
+// Authorization is only the Fireworks key from the environment. The caller's
+// virtual key is never copied, even when that environment variable is empty.
 // The key itself is never logged.
 func (h *Handler) copyRequestHeaders(dst, src http.Header, requestID string) {
 	for _, name := range []string{"Content-Type", "Accept"} {
@@ -425,10 +456,6 @@ func (h *Handler) copyRequestHeaders(dst, src http.Header, requestID string) {
 	}
 	if h.apiKey != "" {
 		dst.Set("Authorization", "Bearer "+h.apiKey)
-		return
-	}
-	if v := src.Get("Authorization"); v != "" {
-		dst.Set("Authorization", v)
 	}
 	if requestID != "" {
 		dst.Set("X-Request-ID", requestID)
@@ -606,16 +633,38 @@ func (h *Handler) refundTokens(tenant string, tokens int) {
 	h.limiter.Refund(tenant, tokens)
 }
 
+// caller is the tenant for this request. configured is false in open mode,
+// where rpm and tpm come from the process flags instead of the key file.
+type caller struct {
+	name       string
+	rpm        int
+	tpm        int
+	configured bool
+	allows     func(string) bool
+}
+
+func allowAny(string) bool { return true }
+
 // authenticate names the tenant. With a key file, only a listed Bearer key
 // passes, and the name is the one in the file. Without a key file, every
 // caller passes and the name is a hash of the header so two callers do not
 // share a budget and the raw header is not kept.
-func (h *Handler) authenticate(authorization string) (string, bool) {
-	if h.keys != nil {
-		return h.keys.Tenant(authorization)
+func (h *Handler) authenticate(authorization string) (caller, bool) {
+	if keys := h.keys.Load(); keys != nil {
+		found, ok := keys.Lookup(authorization)
+		if !ok {
+			return caller{}, false
+		}
+		return caller{
+			name:       found.Name,
+			rpm:        found.RPM,
+			tpm:        found.TPM,
+			configured: true,
+			allows:     found.Allows,
+		}, true
 	}
 	sum := sha256.Sum256([]byte(authorization))
-	return hex.EncodeToString(sum[:]), true
+	return caller{name: hex.EncodeToString(sum[:]), allows: allowAny}, true
 }
 
 func writeRateLimited(w http.ResponseWriter, retryAfter time.Duration) {
@@ -646,9 +695,17 @@ type apiErrorBody struct {
 }
 
 func writeOpenAIError(w http.ResponseWriter, status int, message, typ string) {
+	writeCodedError(w, status, message, typ, "")
+}
+
+func writeCodedError(w http.ResponseWriter, status int, message, typ, code string) {
+	var codePtr *string
+	if code != "" {
+		codePtr = &code
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(apiError{
-		Error: apiErrorBody{Message: message, Type: typ},
+		Error: apiErrorBody{Message: message, Type: typ, Code: codePtr},
 	})
 }

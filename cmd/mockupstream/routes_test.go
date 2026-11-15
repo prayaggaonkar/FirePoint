@@ -192,7 +192,9 @@ func TestModelsRequireAKeyWhenConfigured(t *testing.T) {
 	mock := newHandler(config{tokens: 1})
 	upstream := httptest.NewServer(mock)
 	t.Cleanup(upstream.Close)
-	keys, err := auth.New(auth.File{Tenants: []auth.Tenant{{ID: "acme", Key: "acme-secret"}}})
+	keys, err := auth.New(auth.File{Tenants: []auth.Tenant{{
+		Name: "acme", KeySHA256: auth.HashKey("acme-secret"), RPM: 600, TPM: 200000,
+	}}})
 	if err != nil {
 		t.Fatal(err)
 	}

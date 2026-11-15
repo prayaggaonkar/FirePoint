@@ -115,11 +115,8 @@ func TestClientCancelStopsUpstream(t *testing.T) {
 	}
 }
 
-func TestBodyAndAuthorizationPassThrough(t *testing.T) {
-	const (
-		wantBody = `{"model":"test","messages":[{"role":"user","content":"hi"}]}`
-		wantAuth = "Bearer secret"
-	)
+func TestBodyPassesThroughAndClientAuthorizationDoesNot(t *testing.T) {
+	const wantBody = `{"model":"test","messages":[{"role":"user","content":"hi"}]}`
 	saw := make(chan struct{})
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer close(saw)
@@ -130,8 +127,8 @@ func TestBodyAndAuthorizationPassThrough(t *testing.T) {
 		if string(got) != wantBody {
 			t.Errorf("body = %q, want %q", got, wantBody)
 		}
-		if got := r.Header.Get("Authorization"); got != wantAuth {
-			t.Errorf("Authorization = %q, want %q", got, wantAuth)
+		if got := r.Header.Get("Authorization"); got != "" {
+			t.Errorf("Authorization = %q, client key must not be forwarded", got)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
@@ -145,7 +142,7 @@ func TestBodyAndAuthorizationPassThrough(t *testing.T) {
 		t.Fatal(err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", wantAuth)
+	req.Header.Set("Authorization", "Bearer secret")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)

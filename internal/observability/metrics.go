@@ -18,7 +18,7 @@ type Metrics struct {
 	overhead       prometheus.Histogram
 	active         prometheus.Gauge
 	upstreamStatus *prometheus.CounterVec
-	rateLimited    prometheus.Counter
+	rateLimited    *prometheus.CounterVec
 	breakerState   *prometheus.GaugeVec
 }
 
@@ -45,10 +45,10 @@ func New() *Metrics {
 			Name: "firerouter_upstream_status_total",
 			Help: "Upstream responses by HTTP status. Transport failures use status \"error\".",
 		}, []string{"status"}),
-		rateLimited: prometheus.NewCounter(prometheus.CounterOpts{
+		rateLimited: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "firerouter_ratelimit_rejections_total",
 			Help: "Requests rejected by the per-client rate limiter.",
-		}),
+		}, []string{"tenant"}),
 		breakerState: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "firerouter_breaker_state",
 			Help: "Circuit breaker position for one model: 0 closed, 1 open, 2 half-open.",
@@ -98,12 +98,16 @@ func (m *Metrics) UpstreamStatus(status string) {
 	m.upstreamStatus.WithLabelValues(status).Inc()
 }
 
-// RateLimited counts one rejected request.
-func (m *Metrics) RateLimited() {
+// RateLimited counts one rejected request. tenant is the tenant name, which
+// is not a secret. An empty name is recorded as "unknown".
+func (m *Metrics) RateLimited(tenant string) {
 	if m == nil {
 		return
 	}
-	m.rateLimited.Inc()
+	if tenant == "" {
+		tenant = "unknown"
+	}
+	m.rateLimited.WithLabelValues(tenant).Inc()
 }
 
 // SetBreakerState records the breaker position for model.
