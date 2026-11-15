@@ -26,8 +26,18 @@ clean:
 
 COMPOSE := docker compose $(if $(wildcard .env),--env-file .env,) -f deploy/docker-compose.yml
 
+demo-venv:
+	@if ! demo/.venv/bin/python -c 'import openai' >/dev/null 2>&1; then \
+		python3 -m venv demo/.venv; \
+		demo/.venv/bin/pip install -q -r compat/python/requirements.txt; \
+	fi
+
 demo-up:
-	$(COMPOSE) up --build -d
+	$(MAKE) demo-venv >/dev/null & pid=$$!; \
+	$(COMPOSE) up --build -d; \
+	status=$$?; \
+	wait $$pid || status=$$?; \
+	exit $$status
 
 demo-down:
 	$(COMPOSE) --profile load down --remove-orphans

@@ -20,6 +20,7 @@ go.work.sum
 
 # Compat-suite installs
 compat/python/.venv/
+demo/.venv/
 compat/js/node_modules/
 
 # Secrets and local config

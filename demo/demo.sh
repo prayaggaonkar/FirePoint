@@ -7,14 +7,18 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
 
-if [[ -f .env ]]; then
-	set -a
+# deploy/demo.env is the committed pair that matches deploy/demo-keys.json.
+# A local .env overrides it.
+set -a
+# shellcheck disable=SC1091
+source "$ROOT/deploy/demo.env"
+if [[ -f $ROOT/.env ]]; then
 	# shellcheck disable=SC1091
-	source .env
-	set +a
+	source "$ROOT/.env"
 fi
-: "${NOISY_API_KEY:?NOISY_API_KEY is missing from .env}"
-: "${QUIET_API_KEY:?QUIET_API_KEY is missing from .env}"
+set +a
+: "${NOISY_API_KEY:?NOISY_API_KEY is missing from deploy/demo.env}"
+: "${QUIET_API_KEY:?QUIET_API_KEY is missing from deploy/demo.env}"
 
 MOCK=${MOCK:-http://127.0.0.1:9000}
 PROXY=${PROXY:-http://127.0.0.1:8080}
@@ -81,11 +85,12 @@ pause() {
 }
 
 python_bin() {
-	if [[ -x compat/python/.venv/bin/python ]]; then
-		echo compat/python/.venv/bin/python
-		return
+	local venv=$ROOT/demo/.venv
+	if ! "$venv/bin/python" -c 'import openai' >/dev/null 2>&1; then
+		python3 -m venv "$venv"
+		"$venv/bin/pip" install -q -r "$ROOT/compat/python/requirements.txt"
 	fi
-	echo python3
+	echo "$venv/bin/python"
 }
 
 ensure_loadgen() {
