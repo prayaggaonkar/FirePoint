@@ -87,7 +87,7 @@ flowchart LR
 
 Auth checks the virtual key before the body is read. The rate limiter reserves a token estimate. The router lists the requested model, then its fallbacks. The breaker skips a model that has been failing. The upstream call uses one shared HTTP client for the life of the process.
 
-SSE is copied one read at a time and flushed on every chunk. The body is not accumulated, and the client does not compress the stream, because either one would hold tokens until a buffer filled. If the client disconnects, the upstream request is cancelled. More detail is in [docs/architecture.md](docs/architecture.md).
+SSE is copied one read at a time and flushed on every chunk. The body is not accumulated, and the client does not compress the stream, because either one would hold tokens until a buffer filled. If the client disconnects, the upstream request is cancelled. More detail is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). File descriptors, ephemeral ports, and `GOMAXPROCS` are in [docs/TUNING.md](docs/TUNING.md).
 
 ## Configuration
 
@@ -148,6 +148,6 @@ FireRouter is a single Go binary aimed at Fireworks streaming latency. The publi
 
 ## Contributing
 
-Issues and pull requests: [github.com/prayaggaonkar/FireRouter](https://github.com/prayaggaonkar/FireRouter). Before sending a change, run `go vet ./...` and `go test -race ./...`.
+Issues and pull requests: [github.com/prayaggaonkar/FireRouter](https://github.com/prayaggaonkar/FireRouter). Build, test, and demo steps are in [CONTRIBUTING.md](CONTRIBUTING.md). Report vulnerabilities the way [SECURITY.md](SECURITY.md) describes.
 
-This repository has no license file. All rights reserved until one is added.
+Apache-2.0. See [LICENSE](LICENSE).
