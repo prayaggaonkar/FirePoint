@@ -17,6 +17,9 @@ import (
 	"time"
 )
 
+// version is replaced by the image build: -ldflags "-X main.version=...".
+var version = "dev"
+
 func main() {
 	addr := flag.String("addr", ":9000", "listen address")
 	firstTokenDelay := flag.Duration("first-token-delay", 200*time.Millisecond, "wait before the first streamed token")
@@ -33,7 +36,7 @@ func main() {
 		failRate:        *failRate,
 	})
 	h.setAdminToken(*adminToken)
-	log.Printf("listening on %s", *addr)
+	log.Printf("mockupstream %s listening on %s", version, *addr)
 	log.Fatal(http.ListenAndServe(*addr, h))
 }
 

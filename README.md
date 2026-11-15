@@ -117,6 +117,6 @@ curl -s localhost:8080/metrics
 
 ### Metrics stack
 
-`docker compose up` builds the proxy and the mock, then starts Prometheus on port 9090 and Grafana on port 3000. Grafana's user and password are both `admin`. The FireRouter dashboard is already loaded. This compose file is for a laptop.
+`docker compose up` builds the proxy and the mock from `deploy/Dockerfile`, then starts Prometheus on port 9090 and Grafana on port 3000. The image is distroless and runs as nonroot. Pass `--build-arg VERSION=...` and `--build-arg GO_VERSION=1.22.2` to stamp the release and the Go toolchain. Grafana's user and password are both `admin`. The FireRouter dashboard is already loaded. This compose file is for a laptop.
 
 How the pieces fit is in [docs/architecture.md](docs/architecture.md). A measured overhead run is in [docs/benchmark.md](docs/benchmark.md).

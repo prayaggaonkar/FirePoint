@@ -10,7 +10,11 @@ import (
 	"time"
 )
 
+// version is replaced by the image build: -ldflags "-X main.version=...".
+var version = "dev"
+
 func main() {
+	log.Printf("loadgen %s", version)
 	urlFlag := flag.String("url", "http://127.0.0.1:8080/v1/chat/completions", "streaming chat completions URL")
 	rate := flag.Float64("rate", 1, "requests per second; ticks fire even when responses are still open")
 	duration := flag.Duration("duration", 30*time.Second, "measurement window after warmup")

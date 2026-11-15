@@ -4,12 +4,16 @@
 
 services:
   mockupstream:
-    build: .
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile
     entrypoint: ["mockupstream"]
     command: ["-addr", ":9000", "-first-token-delay", "50ms", "-token-interval", "10ms", "-tokens", "8"]
 
   firerouter:
-    build: .
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile
     entrypoint: ["firerouter"]
     command: ["-listen", ":8080", "-upstream", "http://mockupstream:9000"]
     ports:

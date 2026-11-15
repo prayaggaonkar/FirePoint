@@ -4,3 +4,5 @@ bin
 loadgen.json
 .env
 .env.*
+compat/python/.venv
+compat/js/node_modules
