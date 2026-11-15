@@ -2,11 +2,14 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"math/rand"
 	"net/http"
 	"strings"
@@ -20,6 +23,7 @@ func main() {
 	tokenInterval := flag.Duration("token-interval", 20*time.Millisecond, "wait between streamed tokens")
 	tokens := flag.Int("tokens", 50, "number of completion tokens to emit")
 	failRate := flag.Float64("fail-rate", 0.0, "fraction of requests that return HTTP 503")
+	adminToken := flag.String("admin-token", "", "bearer token required by /admin; empty disables the admin API")
 	flag.Parse()
 
 	h := newHandler(config{
@@ -28,6 +32,7 @@ func main() {
 		tokens:          *tokens,
 		failRate:        *failRate,
 	})
+	h.setAdminToken(*adminToken)
 	log.Printf("listening on %s", *addr)
 	log.Fatal(http.ListenAndServe(*addr, h))
 }
@@ -56,9 +61,23 @@ func (c config) totalDelay() time.Duration {
 type handler struct {
 	cfg config
 	now func() time.Time
+	// adminSum is the sha256 of the admin token. hasAdmin is false when the
+	// flag is empty, so the admin API stays closed.
+	adminSum [sha256.Size]byte
+	hasAdmin bool
 
-	mu  sync.Mutex
-	rng *rand.Rand
+	// mu guards rng and rules. math/rand is not safe for concurrent use,
+	// and a failure roll must see a stable rule list.
+	mu    sync.Mutex
+	rng   *rand.Rand
+	rules []failRule
+}
+
+// failRule is one live failure. Models whose name contains ModelContains
+// fail with probability Rate. The first matching rule wins.
+type failRule struct {
+	ModelContains string  `json:"model_contains"`
+	Rate          float64 `json:"rate"`
 }
 
 func newHandler(cfg config) *handler {
@@ -85,9 +104,126 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.embeddings(w, r)
 	case r.Method == http.MethodGet && r.URL.Path == "/v1/models":
 		h.models(w, r)
+	case strings.HasPrefix(r.URL.Path, "/admin"):
+		h.admin(w, r)
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+func (h *handler) setAdminToken(token string) {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		h.hasAdmin = false
+		return
+	}
+	h.adminSum = sha256.Sum256([]byte(token))
+	h.hasAdmin = true
+}
+
+func (h *handler) admin(w http.ResponseWriter, r *http.Request) {
+	if !h.adminAuthorized(r) {
+		writeError(w, http.StatusUnauthorized, "Invalid admin token.", "invalid_request_error")
+		return
+	}
+	switch {
+	case r.Method == http.MethodPost && r.URL.Path == "/admin/fail":
+		h.adminFail(w, r)
+	case r.Method == http.MethodPost && r.URL.Path == "/admin/reset":
+		h.adminReset(w, r)
+	case r.Method == http.MethodGet && r.URL.Path == "/admin/state":
+		h.adminState(w, r)
+	default:
+		w.Header().Set("Allow", adminAllow(r.URL.Path))
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed", "invalid_request_error")
+	}
+}
+
+func adminAllow(path string) string {
+	switch path {
+	case "/admin/fail", "/admin/reset":
+		return http.MethodPost
+	case "/admin/state":
+		return http.MethodGet
+	default:
+		return http.MethodGet + ", " + http.MethodPost
+	}
+}
+
+func (h *handler) adminAuthorized(r *http.Request) bool {
+	if !h.hasAdmin {
+		return false
+	}
+	sum := sha256.Sum256([]byte(bearerToken(r.Header.Get("Authorization"))))
+	// Compare the hashes so a shorter guess is not rejected faster than a
+	// longer one, and the compare itself does not stop at the first byte.
+	return subtle.ConstantTimeCompare(sum[:], h.adminSum[:]) == 1
+}
+
+func bearerToken(authorization string) string {
+	const prefix = "bearer "
+	if len(authorization) < len(prefix) || !strings.EqualFold(authorization[:len(prefix)], prefix) {
+		return ""
+	}
+	token := strings.TrimSpace(authorization[len(prefix):])
+	if token == "" || strings.ContainsAny(token, " \t") {
+		return ""
+	}
+	return token
+}
+
+func (h *handler) adminFail(w http.ResponseWriter, r *http.Request) {
+	var rule failRule
+	if err := json.NewDecoder(r.Body).Decode(&rule); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body", "invalid_request_error")
+		return
+	}
+	rule.ModelContains = strings.TrimSpace(rule.ModelContains)
+	if rule.ModelContains == "" || math.IsNaN(rule.Rate) || rule.Rate < 0 || rule.Rate > 1 {
+		writeError(w, http.StatusBadRequest, "model_contains is required and rate must be from 0 to 1", "invalid_request_error")
+		return
+	}
+	h.mu.Lock()
+	replaced := false
+	for i := range h.rules {
+		if h.rules[i].ModelContains == rule.ModelContains {
+			h.rules[i].Rate = rule.Rate
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		h.rules = append(h.rules, rule)
+	}
+	state := h.stateLocked()
+	h.mu.Unlock()
+	writeJSON(w, state)
+}
+
+func (h *handler) adminReset(w http.ResponseWriter, r *http.Request) {
+	h.mu.Lock()
+	h.rules = nil
+	h.mu.Unlock()
+	writeJSON(w, adminState{Rules: []failRule{}})
+}
+
+func (h *handler) adminState(w http.ResponseWriter, r *http.Request) {
+	h.mu.Lock()
+	state := h.stateLocked()
+	h.mu.Unlock()
+	writeJSON(w, state)
+}
+
+type adminState struct {
+	Rules []failRule `json:"rules"`
+}
+
+// stateLocked copies the rules so the response does not share the live slice.
+// The caller holds h.mu.
+func (h *handler) stateLocked() adminState {
+	rules := make([]failRule, len(h.rules))
+	copy(rules, h.rules)
+	return adminState{Rules: rules}
 }
 
 type chatRequest struct {
@@ -107,7 +243,7 @@ func (h *handler) completions(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "The server is overloaded or not ready yet.", "server_error")
 		return
 	}
-	if h.shouldFail() {
+	if h.shouldFail(req.Model) {
 		writeError(w, http.StatusServiceUnavailable, "The server is overloaded or not ready yet.", "server_error")
 		return
 	}
@@ -121,17 +257,25 @@ func (h *handler) completions(w http.ResponseWriter, r *http.Request) {
 	h.complete(w, r, req.Model)
 }
 
-func (h *handler) shouldFail() bool {
-	if h.cfg.failRate <= 0 {
+// shouldFail reports whether this model should return 503. A matching admin
+// rule replaces the process-wide -fail-rate. No match keeps that rate.
+func (h *handler) shouldFail(model string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	rate := h.cfg.failRate
+	for _, rule := range h.rules {
+		if strings.Contains(model, rule.ModelContains) {
+			rate = rule.Rate
+			break
+		}
+	}
+	if rate <= 0 {
 		return false
 	}
-	if h.cfg.failRate >= 1 {
+	if rate >= 1 {
 		return true
 	}
-	h.mu.Lock()
-	roll := h.rng.Float64()
-	h.mu.Unlock()
-	return roll < h.cfg.failRate
+	return h.rng.Float64() < rate
 }
 
 func (h *handler) stream(w http.ResponseWriter, r *http.Request, model string) {
@@ -231,7 +375,8 @@ func (h *handler) embeddings(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) models(w http.ResponseWriter, r *http.Request) {
-	if h.shouldFail() {
+	// The model list has no model name, so only the process-wide rate applies.
+	if h.shouldFail("") {
 		writeError(w, http.StatusServiceUnavailable, "The server is overloaded or not ready yet.", "server_error")
 		return
 	}
@@ -253,7 +398,7 @@ func (h *handler) ready(w http.ResponseWriter, r *http.Request) (string, bool) {
 		writeError(w, http.StatusBadRequest, "invalid request body", "invalid_request_error")
 		return "", false
 	}
-	if strings.Contains(req.Model, "broken") || h.shouldFail() {
+	if strings.Contains(req.Model, "broken") || h.shouldFail(req.Model) {
 		writeError(w, http.StatusServiceUnavailable, "The server is overloaded or not ready yet.", "server_error")
 		return "", false
 	}

@@ -18,6 +18,16 @@ In one terminal, start the makeshift Fireworks server:
 ./bin/mockupstream
 ```
 
+`-admin-token` opens a small control API. Without the flag those routes stay closed. Send the token as `Authorization: Bearer`. `POST /admin/fail` with `{"model_contains":"primary","rate":1.0}` fails models whose name contains that text. `rate` is from 0 to 1, and the first matching rule wins. `GET /admin/state` lists the rules. `POST /admin/reset` clears them.
+
+```bash
+./bin/mockupstream -admin-token secret
+curl -X POST localhost:9000/admin/fail \
+  -H 'Authorization: Bearer secret' \
+  -H 'Content-Type: application/json' \
+  -d '{"model_contains":"primary","rate":1.0}'
+```
+
 In another, start the proxy. It listens on `:8080` and forwards to `http://localhost:9000`:
 
 ```bash
