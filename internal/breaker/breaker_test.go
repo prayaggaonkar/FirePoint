@@ -184,6 +184,20 @@ func TestConcurrentClosedRecords(t *testing.T) {
 	}
 }
 
+func BenchmarkAllowRecord(b *testing.B) {
+	br := New(DefaultConfig())
+	now := time.Unix(1_700_000_000, 0)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		done, err := br.Allow(now)
+		if err != nil {
+			b.Fatal(err)
+		}
+		done(Succeeded)
+	}
+}
+
 func openBreaker(t *testing.T) (*Breaker, time.Time) {
 	t.Helper()
 	b := New(DefaultConfig())

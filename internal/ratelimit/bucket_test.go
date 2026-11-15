@@ -142,6 +142,20 @@ func TestBucketConcurrentTryTake(t *testing.T) {
 	}
 }
 
+func BenchmarkTryTake(b *testing.B) {
+	now := time.Unix(0, 0)
+	// Full and not refilling: each call only locks, checks, and subtracts.
+	bucket := NewBucket(1e18, 0, now)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		ok, _ := bucket.TryTake(1, now)
+		if !ok {
+			b.Fatal("bucket rejected a token")
+		}
+	}
+}
+
 func emptyBucket(t *testing.T, capacity, rate float64, now time.Time) *Bucket {
 	t.Helper()
 	b := NewBucket(capacity, rate, now)
