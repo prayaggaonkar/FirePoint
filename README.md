@@ -23,6 +23,8 @@ Grafana is anonymous at [http://localhost:3000](http://localhost:3000). Promethe
 
 `make demo-up` does the same compose up and also installs the pinned OpenAI package into `demo/.venv`. `make demo-down` stops the stack.
 
+A public Fly sandbox, still with no Fireworks key, is described in [deploy/fly/README.md](deploy/fly/README.md). `GET /` on that app shows a live metrics summary and curl examples.
+
 ## Use it with your app
 
 Point the OpenAI SDK at FireRouter. The key here is a FireRouter virtual key, not the Fireworks key.
@@ -99,6 +101,9 @@ SSE is copied one read at a time and flushed on every chunk. The body is not acc
 | `-config` | empty | Fallback file. |
 | `-rpm` | `600` | Requests per minute when no key file is set. |
 | `-tpm` | `200000` | Tokens per minute when no key file is set. |
+| `-ip-rpm` | `0` | Requests per minute for one client address. `0` turns the per-address limit off. `GET /healthz` is not counted. The address is `Fly-Client-IP` when that header is set, otherwise the TCP peer. `X-Forwarded-For` is not used. |
+| `-max-body` | `1048576` | Maximum inbound request body, in bytes. The response stream is not capped. |
+| `-status` | off | Serve a read-only metrics page at `GET /`. |
 | `-inject-usage` | off | On streamed chats, set `stream_options.include_usage` so a refund can use the upstream usage chunk. |
 | `-version` |  | Print the build version and exit. Set with `-X main.version` or the image `VERSION` build arg. |
 
@@ -134,7 +139,7 @@ Fallback file:
 
 A name with no entry is tried alone. Fallbacks of fallbacks are not followed. The response header `X-FireRouter-Model` is the model that served.
 
-Breaker settings are compiled in, not in the file: 30 second window, at least 20 samples, open at a 50% error rate, stay open 15 seconds, then allow 3 probes. Request bodies are capped at 1 MB.
+Breaker settings are compiled in, not in the file: 30 second window, at least 20 samples, open at a 50% error rate, stay open 15 seconds, then allow 3 probes. Request bodies are capped at 1 MB unless `-max-body` sets another size.
 
 ## Compared with LiteLLM and Portkey
 

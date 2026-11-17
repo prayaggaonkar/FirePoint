@@ -82,6 +82,9 @@ type Handler struct {
 	// injectUsage asks the upstream for a usage chunk on streamed chats so
 	// the token refund can use the real count. Off by default.
 	injectUsage bool
+	// maxBody caps the inbound request. Zero keeps maxRequestBody.
+	// The upstream response is still streamed and is not held to this cap.
+	maxBody int64
 	// clock is the time source for latency samples and breaker decisions.
 	clock func() time.Time
 }
@@ -155,6 +158,26 @@ func (h *Handler) SetInjectUsage(on bool) {
 	h.injectUsage = on
 }
 
+// SetMaxBody caps the inbound request body. Zero and negative values keep
+// the built-in 1 MB cap. The response stream is not capped.
+func (h *Handler) SetMaxBody(n int64) {
+	if n > 0 {
+		h.maxBody = n
+	}
+}
+
+// MaxBody is the inbound cap currently in effect.
+func (h *Handler) MaxBody() int64 {
+	return h.maxBodyLimit()
+}
+
+func (h *Handler) maxBodyLimit() int64 {
+	if h.maxBody > 0 {
+		return h.maxBody
+	}
+	return maxRequestBody
+}
+
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	kind, ok := routeOf(r)
 	if !ok {
@@ -177,7 +200,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var body []byte
 	if kind != routeModels {
 		var err error
-		body, err = readRequestBody(w, r)
+		body, err = readRequestBody(w, r, h.maxBodyLimit())
 		if err != nil {
 			if r.Context().Err() != nil {
 				return
@@ -423,10 +446,10 @@ func discardBody(rc io.ReadCloser) {
 	_, _ = io.Copy(io.Discard, io.LimitReader(rc, maxRequestBody))
 }
 
-func readRequestBody(w http.ResponseWriter, r *http.Request) ([]byte, error) {
+func readRequestBody(w http.ResponseWriter, r *http.Request, max int64) ([]byte, error) {
 	defer r.Body.Close()
 	// Cap applies to the inbound request only. The upstream response is streamed.
-	return io.ReadAll(http.MaxBytesReader(w, r.Body, maxRequestBody))
+	return io.ReadAll(http.MaxBytesReader(w, r.Body, max))
 }
 
 // upstreamRequestURL appends the request path to the configured base.

@@ -46,6 +46,8 @@ One `http.Client` and one `http.Transport` live for the process. Idle connection
 
 `GET /healthz` answers `ok` and does not call the model.
 
+`GET /`, when `-status` is set, renders a read-only page from the in-process metrics. It does not read a request body. `-ip-rpm` limits each client address. `GET /healthz` is outside that limit. The address is `Fly-Client-IP` when Fly set it, otherwise the TCP peer. `X-Forwarded-For` is ignored.
+
 `GET /metrics` is Prometheus text: time to the first response byte, proxy overhead, active streams, upstream status codes, rate-limit rejections, requests by the model that served them, and each model's breaker state (0 closed, 1 open, 2 half-open). Prompts and keys are not labels.
 
 SIGHUP reloads the key file. Streams that already started keep going. A file that does not parse leaves the previous keys in place. SIGINT and SIGTERM stop new calls and wait up to 30 seconds for streams to finish.
@@ -59,5 +61,6 @@ Rate limits are in memory in that process. See [TUNING.md](TUNING.md) for file d
 | `firerouter` | The proxy. |
 | `mockupstream` | A fake model. A model name containing `broken` returns 503. |
 | `loadgen` | Sends chats on a fixed timer and reports wait times. |
+| `sandbox` | Runs `mockupstream` on `127.0.0.1` and `firerouter` in front of it. Exits if `FIREWORKS_API_KEY` is set. Used by the Fly config in `deploy/fly/`. |
 
 `loadgen` measures from send until the first `data:` line. The proxy's own metric measures until the first response byte, which is a few bytes earlier.

@@ -66,6 +66,8 @@ func TestNilMetricsAreSafe(t *testing.T) {
 	m.RateLimited("alice")
 	m.Served("m")
 	m.SetBreakerState("m", 1)
+	m.IPLimited()
+	_ = m.Summary()
 	rr := httptest.NewRecorder()
 	m.Handler().ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/metrics", nil))
 	if rr.Code != http.StatusNotFound {

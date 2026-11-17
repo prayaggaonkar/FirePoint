@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -17,6 +18,7 @@ import (
 	"github.com/prayaggaonkar/firerouter/internal/breaker"
 	"github.com/prayaggaonkar/firerouter/internal/observability"
 	"github.com/prayaggaonkar/firerouter/internal/proxy"
+	"github.com/prayaggaonkar/firerouter/internal/ratelimit"
 	"github.com/prayaggaonkar/firerouter/internal/router"
 )
 
@@ -62,6 +64,9 @@ func main() {
 	}
 	handler.SetLimiter(opts.rpm, opts.tpm)
 	handler.SetInjectUsage(opts.injectUsage)
+	if opts.maxBody > 0 {
+		handler.SetMaxBody(opts.maxBody)
+	}
 	// One breaker per model, so an open primary does not block its fallback.
 	handler.SetBreakers(breaker.NewRegistry(breaker.DefaultConfig()))
 	metrics := observability.New()
@@ -77,10 +82,23 @@ func main() {
 	mux.Handle("POST /v1/embeddings", handler)
 	mux.Handle("GET /v1/models", handler)
 	mux.Handle("GET /metrics", metrics.Handler())
+	if opts.status {
+		mux.Handle("GET /", proxy.StatusHandler(metrics, proxy.StatusInfo{
+			IPPerMinute: opts.ipRPM,
+			MaxBody:     handler.MaxBody(),
+		}))
+	}
+
+	var site http.Handler = mux
+	if opts.ipRPM > 0 {
+		// Health checks stay outside the budget. The address is Fly-Client-IP
+		// when present, otherwise the TCP peer. X-Forwarded-For is not used.
+		site = proxy.LimitByIP(ratelimit.NewIPLimiter(opts.ipRPM), nil, metrics.IPLimited, site)
+	}
 
 	srv := &http.Server{
 		Addr:              opts.listen,
-		Handler:           mux,
+		Handler:           site,
 		ReadHeaderTimeout: 5 * time.Second,
 		// A streamed completion can run as long as the model does. A write
 		// deadline would cut the response off while tokens are still arriving.
@@ -89,8 +107,8 @@ func main() {
 
 	errCh := make(chan error, 1)
 	go func() {
-		log.Printf("firerouter %s listening on %s, upstream %s, rpm %d, tpm %d%s%s%s%s",
-			version, opts.listen, opts.upstream, opts.rpm, opts.tpm, configNote(opts.configPath), keysNote(opts.keysPath), keyNote(apiKey), usageNote(opts.injectUsage))
+		log.Printf("firerouter %s listening on %s, upstream %s, rpm %d, tpm %d, max-body %d%s%s%s%s%s%s",
+			version, opts.listen, opts.upstream, opts.rpm, opts.tpm, handler.MaxBody(), configNote(opts.configPath), keysNote(opts.keysPath), keyNote(apiKey), usageNote(opts.injectUsage), ipNote(opts.ipRPM), statusNote(opts.status))
 		errCh <- srv.ListenAndServe()
 	}()
 
@@ -129,7 +147,10 @@ type options struct {
 	keysPath    string
 	rpm         int
 	tpm         int
+	ipRPM       int
+	maxBody     int64
 	injectUsage bool
+	status      bool
 	showVersion bool
 }
 
@@ -141,7 +162,10 @@ func defineFlags(fs *flag.FlagSet) *options {
 	fs.StringVar(&opts.keysPath, "keys", "", "JSON file of tenant key hashes; empty allows every caller")
 	fs.IntVar(&opts.rpm, "rpm", 600, "requests per minute for one client")
 	fs.IntVar(&opts.tpm, "tpm", 200000, "tokens per minute for one client")
+	fs.IntVar(&opts.ipRPM, "ip-rpm", 0, "requests per minute for one client address; 0 disables the per-address limit")
+	fs.Int64Var(&opts.maxBody, "max-body", 1<<20, "maximum inbound request body in bytes")
 	fs.BoolVar(&opts.injectUsage, "inject-usage", false, "on streamed chats, ask the upstream for a usage chunk so token refunds use the real count")
+	fs.BoolVar(&opts.status, "status", false, "serve a read-only metrics page at GET /")
 	fs.BoolVar(&opts.showVersion, "version", false, "print the build version and exit")
 	return opts
 }
@@ -163,6 +187,20 @@ func configNote(path string) string {
 		return ""
 	}
 	return ", fallbacks " + path
+}
+
+func ipNote(rpm int) string {
+	if rpm <= 0 {
+		return ""
+	}
+	return ", ip-rpm " + strconv.Itoa(rpm)
+}
+
+func statusNote(on bool) string {
+	if !on {
+		return ""
+	}
+	return ", status page"
 }
 
 func usageNote(on bool) string {

@@ -21,6 +21,7 @@ type Metrics struct {
 	rateLimited    *prometheus.CounterVec
 	served         *prometheus.CounterVec
 	breakerState   *prometheus.GaugeVec
+	ipLimited      prometheus.Counter
 }
 
 // New registers the FireRouter series on a private registry.
@@ -58,8 +59,12 @@ func New() *Metrics {
 			Name: "firerouter_breaker_state",
 			Help: "Circuit breaker position for one model: 0 closed, 1 open, 2 half-open.",
 		}, []string{"model"}),
+		ipLimited: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "firerouter_ip_rate_limit_rejections_total",
+			Help: "Requests rejected by the per-address rate limiter. The address is not a label.",
+		}),
 	}
-	reg.MustRegister(m.ttft, m.overhead, m.active, m.upstreamStatus, m.rateLimited, m.served, m.breakerState)
+	reg.MustRegister(m.ttft, m.overhead, m.active, m.upstreamStatus, m.rateLimited, m.served, m.breakerState, m.ipLimited)
 	return m
 }
 
@@ -113,6 +118,15 @@ func (m *Metrics) RateLimited(tenant string) {
 		tenant = "unknown"
 	}
 	m.rateLimited.WithLabelValues(tenant).Inc()
+}
+
+// IPLimited counts one request refused by the per-address limiter.
+// The address itself is not recorded.
+func (m *Metrics) IPLimited() {
+	if m == nil {
+		return
+	}
+	m.ipLimited.Inc()
 }
 
 // Served counts one response that was committed to the client.
