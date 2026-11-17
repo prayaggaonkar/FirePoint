@@ -144,6 +144,15 @@ Breaker settings are compiled in, not in the file: 30 second window, at least 20
 
 FireRouter is a single Go binary aimed at Fireworks streaming latency. The published overhead on this machine is a fraction of a millisecond at the median. LiteLLM and Portkey cover many providers, with budgets, dashboards, and routing features this proxy does not have. FireRouter speaks the Fireworks OpenAI-compatible API only.
 
+## Deployment notes
+
+- `GET /metrics` and `GET /healthz` are not authenticated. Keep the listener on a private network, or put it behind a proxy that restricts those paths.
+- `-ip-rpm` takes the client address from `Fly-Client-IP` when that header is present. Fly overwrites it, but anywhere else a caller can set it. Use `-ip-rpm` only behind Fly, or behind a proxy that strips the header.
+- Metric labels for model and tenant names are capped at 64 values each, and extra names are reported as `other`. The breaker registry holds at most 256 models and extra names share one breaker. This stops a caller from growing memory by inventing model names.
+- In open mode (no `-keys`), rate-limit metrics use the tenant label `anonymous`, and idle per-caller budgets are dropped after 10 minutes.
+- Token budgets use an estimate: about 4 bytes per token of string message content, plus `max_tokens`. Array (multimodal) content counts as zero. With `-inject-usage` on streamed chats, the unused part is refunded from the real usage chunk.
+- Nothing in this repository has been run against the live Fireworks API. The benchmark, demo, and tests use the bundled mock upstream.
+
 ## Known limitations
 
 - Rate limits live in memory in each process. With more than one replica, divide the configured rpm and tpm by the replica count.
