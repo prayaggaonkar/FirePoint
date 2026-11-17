@@ -291,3 +291,50 @@ func (c *manualClock) Now() time.Time {
 	defer c.mu.Unlock()
 	return c.t
 }
+
+func TestDoOneCountsServerErrorsAndDeadConnections(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	out := doOne(context.Background(), srv.Client(), srv.URL, "", nil, time.Now)
+	if out.err == nil || out.status != http.StatusServiceUnavailable {
+		t.Fatalf("503: status %d err %v", out.status, out.err)
+	}
+	srv.Close()
+	out = doOne(context.Background(), srv.Client(), srv.URL, "", nil, time.Now)
+	if out.err == nil {
+		t.Fatal("a refused connection was not an error")
+	}
+}
+
+func TestStreamCutAndErrorEventAreErrors(t *testing.T) {
+	cut := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: one\n\n")
+		w.(http.Flusher).Flush()
+		panic(http.ErrAbortHandler)
+	}))
+	defer cut.Close()
+	if out := doOne(context.Background(), cut.Client(), cut.URL, "", nil, time.Now); out.err == nil {
+		t.Fatal("a truncated stream was counted as success")
+	}
+
+	errEvent := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: one\n\ndata: {\"error\":{\"message\":\"x\"}}\n\n")
+	}))
+	defer errEvent.Close()
+	if out := doOne(context.Background(), errEvent.Client(), errEvent.URL, "", nil, time.Now); out.err == nil {
+		t.Fatal("an error event was counted as success")
+	}
+}
+
+func TestNoSSEDataIsAnError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+	}))
+	defer srv.Close()
+	if out := doOne(context.Background(), srv.Client(), srv.URL, "", nil, time.Now); out.err == nil {
+		t.Fatal("an empty stream was counted as success")
+	}
+}
