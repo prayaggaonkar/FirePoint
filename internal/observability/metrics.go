@@ -4,6 +4,7 @@ package observability
 
 import (
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -22,6 +23,37 @@ type Metrics struct {
 	served         *prometheus.CounterVec
 	breakerState   *prometheus.GaugeVec
 	ipLimited      prometheus.Counter
+	models         labelCap
+	tenants        labelCap
+}
+
+// maxLabelValues bounds how many distinct model or tenant names become label
+// values. The model name comes from the caller, so without a cap a client
+// could create a new time series per request and exhaust memory.
+const maxLabelValues = 64
+
+// overflowLabel replaces any value that arrives after the cap is reached.
+const overflowLabel = "other"
+
+type labelCap struct {
+	mu   sync.Mutex
+	seen map[string]struct{}
+}
+
+func (c *labelCap) value(v string) string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, ok := c.seen[v]; ok {
+		return v
+	}
+	if len(c.seen) >= maxLabelValues {
+		return overflowLabel
+	}
+	if c.seen == nil {
+		c.seen = make(map[string]struct{})
+	}
+	c.seen[v] = struct{}{}
+	return v
 }
 
 // New registers the FireRouter series on a private registry.
@@ -117,7 +149,7 @@ func (m *Metrics) RateLimited(tenant string) {
 	if tenant == "" {
 		tenant = "unknown"
 	}
-	m.rateLimited.WithLabelValues(tenant).Inc()
+	m.rateLimited.WithLabelValues(m.tenants.value(tenant)).Inc()
 }
 
 // IPLimited counts one request refused by the per-address limiter.
@@ -135,7 +167,7 @@ func (m *Metrics) Served(model string) {
 	if m == nil || model == "" {
 		return
 	}
-	m.served.WithLabelValues(model).Inc()
+	m.served.WithLabelValues(m.models.value(model)).Inc()
 }
 
 // SetBreakerState records the breaker position for model.
@@ -144,7 +176,7 @@ func (m *Metrics) SetBreakerState(model string, value float64) {
 	if m == nil {
 		return
 	}
-	m.breakerState.WithLabelValues(model).Set(value)
+	m.breakerState.WithLabelValues(m.models.value(model)).Set(value)
 }
 
 // Overhead is the proxy's own time for one served response.

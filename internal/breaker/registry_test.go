@@ -2,6 +2,7 @@ package breaker
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -28,5 +29,24 @@ func TestRegistryKeepsABreakerPerModel(t *testing.T) {
 	}
 	if _, err := r.Allow("small", now); err != nil {
 		t.Fatalf("small was closed by big's failures: %v", err)
+	}
+}
+
+func TestRegistryIsBounded(t *testing.T) {
+	r := NewRegistry(DefaultConfig())
+	for i := 0; i < MaxModels+100; i++ {
+		r.Get(fmt.Sprintf("m%d", i))
+	}
+	r.mu.Lock()
+	n := len(r.m)
+	r.mu.Unlock()
+	if n != MaxModels {
+		t.Fatalf("registry holds %d breakers, want %d", n, MaxModels)
+	}
+	if r.Get("brand-new-1") != r.Get("brand-new-2") {
+		t.Fatal("names past the cap should share the overflow breaker")
+	}
+	if r.Get("m0") == r.Get("brand-new-1") {
+		t.Fatal("an existing model must keep its own breaker")
 	}
 }

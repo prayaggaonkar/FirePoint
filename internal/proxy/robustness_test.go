@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/prayaggaonkar/firerouter/internal/breaker"
+	"github.com/prayaggaonkar/firerouter/internal/observability"
 )
 
 func TestSlowHeadersWithinTimeoutAreServed(t *testing.T) {
@@ -130,4 +131,33 @@ func TestCompleteStreamKeepsBreakerClosed(t *testing.T) {
 	if got := reg.Get("m").State(); got != breaker.Closed {
 		t.Fatalf("breaker state %v, want closed", got)
 	}
+}
+
+func TestOpenModeRateLimitLabelDoesNotLeakKeyHashes(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer upstream.Close()
+	m := observability.New()
+	h := newMetricsHandler(t, upstream.URL, m)
+	h.SetLimiter(1, 1000000)
+	proxy := httptest.NewServer(h)
+	defer proxy.Close()
+
+	for _, key := range []string{"Bearer a", "Bearer a", "Bearer b", "Bearer b"} {
+		postChat(t, proxy.URL, key, `{"model":"m"}`).Body.Close()
+	}
+	var sb strings.Builder
+	rec := httptest.NewRecorder()
+	m.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	sb.WriteString(rec.Body.String())
+	if !strings.Contains(sb.String(), `firerouter_ratelimit_rejections_total{tenant="anonymous"} 2`) {
+		t.Fatalf("want two rejections under tenant=anonymous:\n%s", sb.String())
+	}
+}
+
+func TestEvictIdleWithoutLimiterIsSafe(t *testing.T) {
+	h, err := NewHandler("http://127.0.0.1", nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.EvictIdle()
 }

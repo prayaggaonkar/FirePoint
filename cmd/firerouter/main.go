@@ -72,6 +72,8 @@ func main() {
 	metrics := observability.New()
 	handler.SetMetrics(metrics)
 
+	go evictLoop(handler, time.Minute)
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -231,4 +233,13 @@ func envOr(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// evictLoop keeps the limiter's tenant map from growing without bound.
+func evictLoop(h *proxy.Handler, every time.Duration) {
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for range t.C {
+		h.EvictIdle()
+	}
 }
