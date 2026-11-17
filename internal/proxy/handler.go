@@ -237,7 +237,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			ok, retryAfter = h.limiter.Allow(who.name, reserved, h.now())
 		}
 		if !ok {
-			h.metrics.RateLimited(who.name)
+			h.metrics.RateLimited(who.metricName())
 			writeRateLimited(w, retryAfter)
 			return
 		}
@@ -712,6 +712,22 @@ type caller struct {
 }
 
 func allowAny(string) bool { return true }
+
+// metricName is the tenant label. In open mode the name is a hash of the
+// caller's header, which is unbounded, so those callers share one label.
+func (c caller) metricName() string {
+	if !c.configured {
+		return "anonymous"
+	}
+	return c.name
+}
+
+// EvictIdle drops rate-limit state for tenants that have gone quiet.
+func (h *Handler) EvictIdle() {
+	if h.limiter != nil {
+		h.limiter.EvictIdle(h.now())
+	}
+}
 
 // authenticate names the tenant. With a key file, only a listed Bearer key
 // passes, and the name is the one in the file. Without a key file, every
