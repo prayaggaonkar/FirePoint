@@ -44,7 +44,7 @@ func main() {
 	// Trim so a trailing newline in the env value does not become part of the key.
 	// The value is never written to the log.
 	apiKey := strings.TrimSpace(os.Getenv("FIREWORKS_API_KEY"))
-	handler, err := proxy.NewHandler(opts.upstream, proxy.NewClient(), apiKey)
+	handler, err := proxy.NewHandler(opts.upstream, proxy.NewClientWithHeaderTimeout(opts.headerTimeout), apiKey)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -141,17 +141,18 @@ func main() {
 }
 
 type options struct {
-	listen      string
-	upstream    string
-	configPath  string
-	keysPath    string
-	rpm         int
-	tpm         int
-	ipRPM       int
-	maxBody     int64
-	injectUsage bool
-	status      bool
-	showVersion bool
+	listen        string
+	upstream      string
+	configPath    string
+	keysPath      string
+	rpm           int
+	tpm           int
+	ipRPM         int
+	maxBody       int64
+	headerTimeout time.Duration
+	injectUsage   bool
+	status        bool
+	showVersion   bool
 }
 
 func defineFlags(fs *flag.FlagSet) *options {
@@ -164,6 +165,7 @@ func defineFlags(fs *flag.FlagSet) *options {
 	fs.IntVar(&opts.tpm, "tpm", 200000, "tokens per minute for one client")
 	fs.IntVar(&opts.ipRPM, "ip-rpm", 0, "requests per minute for one client address; 0 disables the per-address limit")
 	fs.Int64Var(&opts.maxBody, "max-body", 1<<20, "maximum inbound request body in bytes")
+	fs.DurationVar(&opts.headerTimeout, "upstream-header-timeout", proxy.DefaultHeaderTimeout, "how long to wait for upstream response headers before treating the model as failed")
 	fs.BoolVar(&opts.injectUsage, "inject-usage", false, "on streamed chats, ask the upstream for a usage chunk so token refunds use the real count")
 	fs.BoolVar(&opts.status, "status", false, "serve a read-only metrics page at GET /")
 	fs.BoolVar(&opts.showVersion, "version", false, "print the build version and exit")

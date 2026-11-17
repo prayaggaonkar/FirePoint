@@ -2,8 +2,6 @@
 
 A small streaming proxy for apps that call Fireworks through the OpenAI SDK and want per-tenant limits and failover without giving up first-token latency.
 
-![Failover from primary to fallback](docs/media/failover.gif)
-
 ## Why
 
 - Each tenant has its own request and token budget.
@@ -102,6 +100,7 @@ SSE is copied one read at a time and flushed on every chunk. The body is not acc
 | `-rpm` | `600` | Requests per minute when no key file is set. |
 | `-tpm` | `200000` | Tokens per minute when no key file is set. |
 | `-ip-rpm` | `0` | Requests per minute for one client address. `0` turns the per-address limit off. `GET /healthz` is not counted. The address is `Fly-Client-IP` when that header is set, otherwise the TCP peer. `X-Forwarded-For` is not used. |
+| `-upstream-header-timeout` | `60s` | How long to wait for upstream response headers. A non-streaming completion sends none until it finishes. A timeout counts as a failure for the breaker. |
 | `-max-body` | `1048576` | Maximum inbound request body, in bytes. The response stream is not capped. |
 | `-status` | off | Serve a read-only metrics page at `GET /`. |
 | `-inject-usage` | off | On streamed chats, set `stream_options.include_usage` so a refund can use the upstream usage chunk. |
@@ -148,7 +147,7 @@ FireRouter is a single Go binary aimed at Fireworks streaming latency. The publi
 ## Known limitations
 
 - Rate limits live in memory in each process. With more than one replica, divide the configured rpm and tpm by the replica count.
-- Fallback happens only before the first response byte. A failure after headers are sent is not retried.
+- Fallback happens only before the first response byte. A failure after headers are sent is not retried. A stream that is cut mid-way gets a final `upstream_stream_error` SSE event and counts as a breaker failure.
 - A fallback is a different model, so the answer can differ in quality.
 
 ## Contributing
