@@ -216,6 +216,11 @@ func readSSE(r io.Reader, sent time.Time, now func() time.Time) outcome {
 	for {
 		line, err := br.ReadString('\n')
 		if payload, ok := dataPayload(line); ok && payload != "[DONE]" {
+			if strings.HasPrefix(payload, `{"error"`) {
+				// The proxy sends this when the upstream stream is cut. It is a
+				// failed request, not a token.
+				return outcome{status: http.StatusOK, ttft: ttft, gaps: gaps, err: errors.New("stream error event")}
+			}
 			at := now()
 			if !saw {
 				ttft = at.Sub(sent)

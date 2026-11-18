@@ -237,7 +237,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			ok, retryAfter = h.limiter.Allow(who.name, reserved, h.now())
 		}
 		if !ok {
-			h.metrics.RateLimited(who.name)
+			h.metrics.RateLimited(who.metricName())
 			writeRateLimited(w, retryAfter)
 			return
 		}
@@ -359,8 +359,18 @@ func (h *Handler) attempt(w http.ResponseWriter, r *http.Request, tenant string,
 	}
 	// 429 is Backoff, not a failure: the body and Retry-After go to the client,
 	// and another model is not tried.
-	report(outcome)
-	h.forward(w, r, resp, model, tenant, reserved, received, sent, reqID)
+	if outcome != breaker.Succeeded {
+		report(outcome)
+		h.forward(w, r, resp, model, tenant, reserved, received, sent, reqID)
+		return attemptDone
+	}
+	// A stream that dies halfway is an upstream failure even though its
+	// headers were fine, so the sample is taken after the body ends.
+	if h.forward(w, r, resp, model, tenant, reserved, received, sent, reqID) {
+		report(breaker.Failed)
+	} else {
+		report(breaker.Succeeded)
+	}
 	return attemptDone
 }
 
@@ -397,7 +407,9 @@ func (h *Handler) candidates(model string) []string {
 	return h.router.Candidates(model)
 }
 
-func (h *Handler) forward(w http.ResponseWriter, r *http.Request, resp *http.Response, model, tenant string, reserved int, received, sent time.Time, reqID string) {
+// forward copies the response to the client. It returns true when the upstream
+// body failed before it ended; a client that left does not count.
+func (h *Handler) forward(w http.ResponseWriter, r *http.Request, resp *http.Response, model, tenant string, reserved int, received, sent time.Time, reqID string) (upstreamFailed bool) {
 	defer resp.Body.Close()
 
 	streaming := isEventStream(resp.Header.Get("Content-Type"))
@@ -431,6 +443,18 @@ func (h *Handler) forward(w http.ResponseWriter, r *http.Request, resp *http.Res
 	if err != nil && r.Context().Err() == nil && !errors.Is(err, context.Canceled) {
 		log.Printf("streaming response: %v", err)
 	}
+	if err != nil && r.Context().Err() == nil {
+		var re *upstreamReadError
+		if errors.As(err, &re) {
+			upstreamFailed = true
+			h.metrics.UpstreamStatus("stream_error")
+			if streaming {
+				// Headers are gone, so no other model can serve. An error event
+				// lets the SDK raise instead of treating a cut stream as complete.
+				writeStreamError(w)
+			}
+		}
+	}
 	// With usage injection the upstream sends a real count, so the estimate can
 	// be corrected. Without it the reserved estimate stands, even if a usage
 	// object happens to be in the body.
@@ -439,6 +463,23 @@ func (h *Handler) forward(w http.ResponseWriter, r *http.Request, resp *http.Res
 			h.refundTokens(tenant, reserved-actual)
 		}
 	}
+	return upstreamFailed
+}
+
+// upstreamReadError marks a failure reading the upstream body, as opposed to
+// writing to a client that has gone away.
+type upstreamReadError struct{ err error }
+
+func (e *upstreamReadError) Error() string { return "upstream body: " + e.err.Error() }
+func (e *upstreamReadError) Unwrap() error { return e.err }
+
+const streamErrorEvent = "data: {\"error\":{\"message\":\"The upstream stream ended unexpectedly.\",\"type\":\"server_error\",\"code\":\"upstream_stream_error\"}}\n\n"
+
+func writeStreamError(w http.ResponseWriter) {
+	if _, err := io.WriteString(w, streamErrorEvent); err != nil {
+		return
+	}
+	_ = http.NewResponseController(w).Flush()
 }
 
 func discardBody(rc io.ReadCloser) {
@@ -624,7 +665,7 @@ func streamBody(dst http.ResponseWriter, src io.Reader, mark *byteTimes, now fun
 			return tail.bytes(), nil
 		}
 		if rerr != nil {
-			return tail.bytes(), rerr
+			return tail.bytes(), &upstreamReadError{err: rerr}
 		}
 	}
 }
@@ -671,6 +712,22 @@ type caller struct {
 }
 
 func allowAny(string) bool { return true }
+
+// metricName is the tenant label. In open mode the name is a hash of the
+// caller's header, which is unbounded, so those callers share one label.
+func (c caller) metricName() string {
+	if !c.configured {
+		return "anonymous"
+	}
+	return c.name
+}
+
+// EvictIdle drops rate-limit state for tenants that have gone quiet.
+func (h *Handler) EvictIdle() {
+	if h.limiter != nil {
+		h.limiter.EvictIdle(h.now())
+	}
+}
 
 // authenticate names the tenant. With a key file, only a listed Bearer key
 // passes, and the name is the one in the file. Without a key file, every

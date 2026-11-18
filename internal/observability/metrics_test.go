@@ -88,3 +88,20 @@ func scrape(t *testing.T, h http.Handler) string {
 	}
 	return string(body)
 }
+
+func TestModelLabelsAreCapped(t *testing.T) {
+	m := New()
+	for i := 0; i < maxLabelValues+50; i++ {
+		m.Served("model-" + strings.Repeat("x", i))
+	}
+	rec := httptest.NewRecorder()
+	m.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	body := rec.Body.String()
+	series := strings.Count(body, "\nfirerouter_requests_total{")
+	if series != maxLabelValues+1 {
+		t.Fatalf("series = %d, want %d (cap plus %q)", series, maxLabelValues+1, overflowLabel)
+	}
+	if !strings.Contains(body, `model="other"} 50`) {
+		t.Fatalf("overflow bucket missing or wrong:\n%s", body)
+	}
+}
