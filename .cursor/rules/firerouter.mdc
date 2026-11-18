@@ -43,3 +43,4 @@ Apps send requests to FireRouter instead of Fireworks directly.
 - Do exactly what the current prompt asks. Do not build ahead.
 - If a requirement is ambiguous, ask before guessing.
 - After finishing, summarize what you changed and how to run it.
+- Do not create a git branch. Commit and push on `main`. Create a branch only when the user explicitly says to. Do not open a pull request unless the user explicitly asks for one.

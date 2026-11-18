@@ -1,0 +1,13 @@
+---
+description: Stay on main. Do not create branches unless asked.
+alwaysApply: true
+---
+
+# Git
+
+The user requires this on every task:
+
+- Do not create a new branch.
+- Do the work on `main` and push to `main`.
+- Create a branch only when the user explicitly says to use a different branch.
+- Do not open a pull request unless the user explicitly asks for one.
