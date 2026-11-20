@@ -151,7 +151,18 @@ FireRouter is a single Go binary aimed at Fireworks streaming latency. The publi
 - Metric labels for model and tenant names are capped at 64 values each, and extra names are reported as `other`. The breaker registry holds at most 256 models and extra names share one breaker. This stops a caller from growing memory by inventing model names.
 - In open mode (no `-keys`), rate-limit metrics use the tenant label `anonymous`, and idle per-caller budgets are dropped after 10 minutes.
 - Token budgets use an estimate: about 4 bytes per token of string message content, plus `max_tokens`. Array (multimodal) content counts as zero. With `-inject-usage` on streamed chats, the unused part is refunded from the real usage chunk.
-- Nothing in this repository has been run against the live Fireworks API. The benchmark, demo, and tests use the bundled mock upstream.
+- The benchmark table above is the mock, on one machine. It was not remeasured against live Fireworks.
+
+## Live Fireworks check
+
+On 20 Nov 2026 the proxy was pointed at `https://api.fireworks.ai/inference` with a Fireworks key in the environment only. Four calls, no load test:
+
+- `GET /v1/models` returned 200. The account listed 31 models. `accounts/fireworks/models/llama-v3p1-8b-instruct`, the id in `deploy/keys.example.json`, was not one of them.
+- One non-streaming chat and one streaming chat to `accounts/fireworks/models/nemotron-lightning-3p5-30b-a3b`, each with `max_tokens` 16, returned 200. The stream's first `data:` line arrived before the body ended, and the body finished with `data: [DONE]`.
+- Both answers included a `usage` object (22 prompt tokens and 16 completion tokens) even though `-inject-usage` was off. On this model those 16 completion tokens were reasoning tokens, `finish_reason` was `length`, and the message text was empty. That is what Fireworks returned. The proxy did not add it.
+- A request for a model name that does not exist returned Fireworks' 404, `Model not found, inaccessible, and/or not deployed`. The proxy forwarded that status and did not call the configured fallback. Fallback runs on connection failures and on 500, 502, 503, and 504, not on 404.
+
+Responses carried `X-FireRouter-Model`, `X-FireRouter-Request-ID`, and Fireworks' `X-Request-Id` and `X-Ratelimit-Over-Limit`.
 
 ## Known limitations
 

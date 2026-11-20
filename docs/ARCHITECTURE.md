@@ -33,7 +33,7 @@ Routes: `POST /v1/chat/completions`, `POST /v1/completions`, `POST /v1/embedding
 4. The candidate list is the requested model, then the names under `fallbacks`, in order. Fallbacks of fallbacks are not followed. A name with no entry is tried alone.
 5. Each model has its own breaker. After 20 samples in 30 seconds, an error rate of at least 50% opens it for 15 seconds and new calls skip that model. Then 3 probes are allowed. Success closes it and clears the window. A failure is a dropped connection, headers that never arrive within `-upstream-header-timeout` (60 seconds by default), or status 500, 502, 503, or 504. A 400-class status is the caller's problem and is not a sample. An upstream 429 is a backoff, not a failure, and is passed through.
 6. The upstream body uses the candidate's model name. `FIREWORKS_API_KEY`, when set, is the only `Authorization` value the model server sees. The caller's key is not copied.
-7. Headers are the commit point. A failure before headers, or a 5xx, tries the next candidate. The first good response is the one the app sees. `X-FireRouter-Model` names it. After that, each read is written and flushed. A break in the middle of the answer is not retried.
+7. Headers are the commit point. A failure before headers, or a 5xx, tries the next candidate. The first good response is the one the app sees. `X-FireRouter-Model` names it. After that, each read is written and flushed. A break in the middle of the answer is not retried. A 404 is forwarded as-is. On 20 Nov 2026, Fireworks used 404 for a model name that was not deployed, so a typo did not fall over to the next model.
 8. If the app disconnects, the request context is cancelled, and so is the upstream call.
 
 ## Why the stream is not buffered
@@ -64,3 +64,5 @@ Rate limits are in memory in that process. See [TUNING.md](TUNING.md) for file d
 | `sandbox` | Runs `mockupstream` on `127.0.0.1` and `firerouter` in front of it. Exits if `FIREWORKS_API_KEY` is set. Used by the Fly config in `deploy/fly/`. |
 
 `loadgen` measures from send until the first `data:` line. The proxy's own metric measures until the first response byte, which is a few bytes earlier.
+
+On 20 Nov 2026 a process with `FIREWORKS_API_KEY` set and `-upstream https://api.fireworks.ai/inference` completed `GET /v1/models`, one non-streaming chat, and one streaming chat against `accounts/fireworks/models/nemotron-lightning-3p5-30b-a3b` (`max_tokens` 16). The stream flushed a `data:` line before the body ended. Fireworks included `usage` on both shapes without `-inject-usage`. A missing model name came back as 404 and was not retried. The mock benchmark was not rerun against Fireworks.
