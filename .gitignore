@@ -31,3 +31,4 @@ compat/js/node_modules/
 keys.json
 loadgen.json
 bench/results/
+__pycache__/

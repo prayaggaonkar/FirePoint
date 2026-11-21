@@ -17,9 +17,10 @@ type chatMessage struct {
 }
 
 type chatBody struct {
-	Model    string        `json:"model"`
-	Stream   bool          `json:"stream"`
-	Messages []chatMessage `json:"messages"`
+	Model     string        `json:"model"`
+	Stream    bool          `json:"stream"`
+	Messages  []chatMessage `json:"messages"`
+	MaxTokens *int          `json:"max_tokens,omitempty"`
 }
 
 // version is replaced by the image build: -ldflags "-X main.version=...".
@@ -34,6 +35,7 @@ func main() {
 	concurrency := flag.Int("concurrency", 8, "maximum requests in flight")
 	jsonPath := flag.String("json", "loadgen.json", "file for the JSON summary")
 	model := flag.String("model", "mock", "model name in the request body")
+	maxTokens := flag.Int("max-tokens", 0, "max_tokens in the request body; 0 omits the field")
 	apiKey := flag.String("api-key", os.Getenv("FIREROUTER_API_KEY"), "virtual key sent as Authorization; empty sends no key")
 	flag.Parse()
 
@@ -43,7 +45,7 @@ func main() {
 	if strings.TrimSpace(*model) == "" {
 		log.Fatal("model must not be empty")
 	}
-	body, err := json.Marshal(chatBody{Model: *model, Stream: true, Messages: []chatMessage{{Role: "user", Content: "hi"}}})
+	body, err := chatBodyJSON(*model, *maxTokens)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -66,6 +68,17 @@ func main() {
 		log.Fatal(err)
 	}
 	fmt.Fprintf(os.Stdout, "wrote %s\n", *jsonPath)
+}
+
+// chatBodyJSON is the streaming chat loadgen sends. maxTokens of 0 leaves
+// the field out so a mock benchmark stays the same shape it has always been.
+// A live run sets it so the model cannot generate without a cap.
+func chatBodyJSON(model string, maxTokens int) ([]byte, error) {
+	body := chatBody{Model: model, Stream: true, Messages: []chatMessage{{Role: "user", Content: "hi"}}}
+	if maxTokens > 0 {
+		body.MaxTokens = &maxTokens
+	}
+	return json.Marshal(body)
 }
 
 func writeJSON(path string, report Report) error {

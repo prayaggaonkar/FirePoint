@@ -6,7 +6,7 @@ A small streaming proxy for apps that call Fireworks through the OpenAI SDK and 
 
 - Each tenant has its own request and token budget.
 - A model that starts failing is skipped, and the request goes to the next configured model.
-- Streams are flushed as each chunk arrives. On the published run, median time to first token was 0.128 ms higher through the proxy than direct.
+- Streams are flushed as each chunk arrives. On the mock benchmark, median time to first token was 0.128 ms higher through the proxy than direct.
 - One static binary. The container image is distroless and runs as nonroot.
 
 ## Try it in 60 seconds
@@ -124,7 +124,7 @@ Key file:
 | `tenants[].tpm` | Tokens per minute for this tenant. |
 | `tenants[].allowed_models` | Optional. Omitted means every model. An explicit empty list means none. |
 
-See `deploy/keys.example.json`. The sample digest is sha256 of the placeholder `example-not-a-key` and will not authenticate a request.
+See `deploy/keys.example.json`. The sample digest is sha256 of the placeholder `example-not-a-key` and will not authenticate a request. An `allowed_models` id has to be one `GET /v1/models` returns for the account. The sample uses `accounts/fireworks/models/nemotron-lightning-3p5-30b-a3b`, which this account listed on 20 Nov 2026.
 
 Fallback file:
 
@@ -155,14 +155,29 @@ FireRouter is a single Go binary aimed at Fireworks streaming latency. The publi
 
 ## Live Fireworks check
 
-On 20 Nov 2026 the proxy was pointed at `https://api.fireworks.ai/inference` with a Fireworks key in the environment only. Four calls, no load test:
+On 20 Nov 2026 the proxy was pointed at `https://api.fireworks.ai/inference`. The key stayed in the environment. Every chat set `max_tokens` to 16. The model was `accounts/fireworks/models/nemotron-lightning-3p5-30b-a3b`. `bench/live_check.sh` refuses to start unless `LIVE_CONFIRM=1`. It does not write the key or the prompt. This was 22 calls that Fireworks accepted as generations, under a cap of 25. The stored chat `usage` objects add up to 798 tokens (22 prompt + 16 completion on each stored chat). `POST /v1/completions` also returned 200; that usage object was not stored.
 
-- `GET /v1/models` returned 200. The account listed 31 models. `accounts/fireworks/models/llama-v3p1-8b-instruct`, the id in `deploy/keys.example.json`, was not one of them.
-- One non-streaming chat and one streaming chat to `accounts/fireworks/models/nemotron-lightning-3p5-30b-a3b`, each with `max_tokens` 16, returned 200. The stream's first `data:` line arrived before the body ended, and the body finished with `data: [DONE]`.
-- Both answers included a `usage` object (22 prompt tokens and 16 completion tokens) even though `-inject-usage` was off. On this model those 16 completion tokens were reasoning tokens, `finish_reason` was `length`, and the message text was empty. That is what Fireworks returned. The proxy did not add it.
-- A request for a model name that does not exist returned Fireworks' 404, `Model not found, inaccessible, and/or not deployed`. The proxy forwarded that status and did not call the configured fallback. Fallback runs on connection failures and on 500, 502, 503, and 504, not on 404.
+- `GET /v1/models` returned 200 and included this model. An earlier list on the same day had 31 models and did not include `accounts/fireworks/models/llama-v3p1-8b-instruct`.
+- One non-streaming chat and one streaming chat returned 200. The stream sent a `data:` line before the body ended, then `data: [DONE]`. Both answers included `usage` with `-inject-usage` off. On this model the 16 completion tokens were reasoning tokens, `finish_reason` was `length`, and the message text was empty. That is what Fireworks returned.
+- One streamed chat with `-inject-usage` returned 200, with a `data:` line, `data: [DONE]`, and a `usage` object. The flag did not change a body Fireworks already accepts.
+- `POST /v1/completions` with the prompt `ok` returned 200 and was one upstream call.
+- `POST /v1/embeddings` with the input `ok` returned 400, `embedding is not supported`. That was one upstream call and it was not retried. This model does not serve embeddings.
+- With `-keys`: a missing virtual key was 401 and the upstream status counter did not move. A model outside `allowed_models` was 403 and the counter did not move. A valid virtual key was one 200 generation.
+- With `-rpm 1`, the first chat was 200 and the second, in the same minute, was 429 from FireRouter with `Retry-After: 60`. The upstream status counter moved by 1.
+- A model name that does not exist still returns Fireworks' 404, `Model not found, inaccessible, and/or not deployed`. The proxy forwards that status. Fallback runs on connection failures and on 500, 502, 503, and 504, not on 404. That 404 check was the earlier call on the same day, not part of the 22.
 
 Responses carried `X-FireRouter-Model`, `X-FireRouter-Request-ID`, and Fireworks' `X-Request-Id` and `X-Ratelimit-Over-Limit`.
+
+After those checks, eight streaming chats went straight to Fireworks and eight went through FireRouter, one at a time, same model and `max_tokens`. Time to first `data:` line, on a Darwin 25.6.0 arm64 machine:
+
+| | direct | through FireRouter | proxy minus direct |
+|---|---:|---:|---:|
+| p50 | 236.5 ms | 224.8 ms | -11.7 ms |
+| p90 | 254.4 ms | 226.4 ms | -28.0 ms |
+
+Each side used 304 tokens. Eight calls is a sample. The direct times already spread from about 219 ms to 267 ms, so the negative difference is noise, not a claim that the proxy is faster. `GET /metrics` on that proxy process showed `firerouter_ttft_seconds` and `firerouter_proxy_overhead_seconds` at 8 observations each.
+
+Not measured live: a breaker trip, failover in the middle of a stream, and the 0.128 ms mock overhead in the table above. The mock table stays the mock result. `bench/run_bench.sh` was not pointed at Fireworks.
 
 ## Known limitations
 
