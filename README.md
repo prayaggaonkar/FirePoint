@@ -9,7 +9,7 @@ A small streaming proxy for apps that call Fireworks through the OpenAI SDK and 
 - Streams are flushed as each chunk arrives. On the mock benchmark, median time to first token was 0.128 ms higher through the proxy than direct.
 - One static binary. The container image is distroless and runs as nonroot.
 
-## Try it in 60 seconds
+## Demo
 
 No Fireworks key. The compose file points FireRouter at the mock.
 
@@ -140,10 +140,6 @@ A name with no entry is tried alone. Fallbacks of fallbacks are not followed. Th
 
 Breaker settings are compiled in, not in the file: 30 second window, at least 20 samples, open at a 50% error rate, stay open 15 seconds, then allow 3 probes. Request bodies are capped at 1 MB unless `-max-body` sets another size.
 
-## Compared with LiteLLM and Portkey
-
-FireRouter is a single Go binary aimed at Fireworks streaming latency. The published overhead on this machine is a fraction of a millisecond at the median. LiteLLM and Portkey cover many providers, with budgets, dashboards, and routing features this proxy does not have. FireRouter speaks the Fireworks OpenAI-compatible API only.
-
 ## Deployment notes
 
 - `GET /metrics` and `GET /healthz` are not authenticated. Keep the listener on a private network, or put it behind a proxy that restricts those paths.
@@ -185,8 +181,13 @@ Not measured live: a breaker trip, failover in the middle of a stream, and the 0
 - Fallback happens only before the first response byte. A failure after headers are sent is not retried. A stream that is cut mid-way gets a final `upstream_stream_error` SSE event and counts as a breaker failure.
 - A fallback is a different model, so the answer can differ in quality.
 
-## Contributing
+## Build
 
-Issues and pull requests: [github.com/prayaggaonkar/FireRouter](https://github.com/prayaggaonkar/FireRouter). Build, test, and demo steps are in [CONTRIBUTING.md](CONTRIBUTING.md). Report vulnerabilities the way [SECURITY.md](SECURITY.md) describes.
+Go 1.22.2 or newer.
 
-Apache-2.0. See [LICENSE](LICENSE).
+```bash
+make build
+make test
+```
+
+`make build` writes `bin/firerouter`, `bin/mockupstream`, and `bin/loadgen`. `make test` runs `go vet ./...` and `go test -race ./...`. A local build prints version `dev`.
