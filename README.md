@@ -1,6 +1,6 @@
 # FireRouter
 
-[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/prayaggaonkar/FireRouter)
+[DeepWiki](https://deepwiki.com/prayaggaonkar/FireRouter)
 
 A small streaming proxy for apps that call Fireworks through the OpenAI SDK and want per-tenant limits and failover without giving up first-token latency.
 
