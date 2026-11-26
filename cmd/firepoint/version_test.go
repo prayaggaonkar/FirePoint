@@ -8,7 +8,7 @@ import (
 
 func TestVersionFlag(t *testing.T) {
 	for _, arg := range []string{"--version", "-version"} {
-		fs := flag.NewFlagSet("firerouter", flag.ContinueOnError)
+		fs := flag.NewFlagSet("firepoint", flag.ContinueOnError)
 		fs.SetOutput(io.Discard)
 		opts := defineFlags(fs)
 		if err := fs.Parse([]string{arg}); err != nil {

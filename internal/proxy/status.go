@@ -4,7 +4,7 @@ import (
 	"html/template"
 	"net/http"
 
-	"github.com/prayaggaonkar/firerouter/internal/observability"
+	"github.com/prayaggaonkar/firepoint/internal/observability"
 )
 
 // StatusInfo is the public-page description of the limits this process is using.
@@ -55,10 +55,10 @@ var statusTmpl = template.Must(template.New("status").Parse(`<!DOCTYPE html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="refresh" content="5">
-<title>FireRouter sandbox</title>
+<title>FirePoint sandbox</title>
 </head>
 <body>
-<h1>FireRouter sandbox</h1>
+<h1>FirePoint sandbox</h1>
 <p>This process talks only to the mock model running on the same machine. No Fireworks API key is configured. The mock is not reachable from the public internet.</p>
 {{if .IPPerMinute}}<p>Each client address may send {{.IPPerMinute}} requests per minute, including loads of this page. Request bodies are capped at {{.MaxBody}} bytes. <code>GET /healthz</code> is not counted.</p>{{else}}<p>Per-address limits are off. Request bodies are capped at {{.MaxBody}} bytes.</p>{{end}}
 <h2>Live metrics</h2>

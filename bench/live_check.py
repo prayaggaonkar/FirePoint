@@ -18,7 +18,7 @@ UPSTREAM = "https://api.fireworks.ai/inference"
 MAX_TOKENS = 16
 GEN_CAP = 25
 PROMPT = "Reply with the single word ok"
-BIN = Path("/tmp/firerouter-livecheck")
+BIN = Path("/tmp/firepoint-livecheck")
 OUT = ROOT / "bench" / "results" / "live-check.json"
 
 generated = 0
@@ -185,7 +185,7 @@ class Proxy:
     def __init__(self, extra):
         self.port = free_port()
         self.base = f"http://127.0.0.1:{self.port}"
-        self.log_path = Path(f"/tmp/firerouter-livecheck-{self.port}.log")
+        self.log_path = Path(f"/tmp/firepoint-livecheck-{self.port}.log")
         self.log = open(self.log_path, "w")
         cmd = [
             str(BIN),
@@ -211,7 +211,7 @@ class Proxy:
         code, _, raw, _, _ = request("GET", self.base + "/metrics")
         if code != 200:
             return None
-        _, total = counter(raw.decode(), "firerouter_upstream_status_total")
+        _, total = counter(raw.decode(), "firepoint_upstream_status_total")
         return total
 
     def sample(self, name):
@@ -223,8 +223,8 @@ class Proxy:
 
         note(
             name,
-            ttft_count=count_line("firerouter_ttft_seconds_count"),
-            overhead_count=count_line("firerouter_proxy_overhead_seconds_count"),
+            ttft_count=count_line("firepoint_ttft_seconds_count"),
+            overhead_count=count_line("firepoint_proxy_overhead_seconds_count"),
         )
 
 
@@ -261,7 +261,7 @@ def record_chat(name, code, hdrs, raw, first, total, stream):
         first_before_end=first is not None and (total - first) > 0.001,
         saw_done=saw_done,
         data_lines=data_lines,
-        served=hdrs.get("X-Firerouter-Model") or hdrs.get("X-FireRouter-Model"),
+        served=hdrs.get("X-Firepoint-Model") or hdrs.get("X-FirePoint-Model"),
         has_usage=usage is not None,
         usage=usage,
         error_type=err_type,
@@ -276,10 +276,10 @@ def record_chat(name, code, hdrs, raw, first, total, stream):
 def main():
     if not os.environ.get("FIREWORKS_API_KEY", "").strip():
         raise Stop("FIREWORKS_API_KEY is not set")
-    subprocess.check_call(["go", "build", "-o", str(BIN), "./cmd/firerouter"], cwd=ROOT)
-    key = "fr-livecheck-virtual"
+    subprocess.check_call(["go", "build", "-o", str(BIN), "./cmd/firepoint"], cwd=ROOT)
+    key = "fp-livecheck-virtual"
     key_hash = hashlib.sha256(key.encode()).hexdigest()
-    keys_path = Path("/tmp/firerouter-livecheck-keys.json")
+    keys_path = Path("/tmp/firepoint-livecheck-keys.json")
     keys_path.write_text(json.dumps({
         "tenants": [{
             "name": "live",

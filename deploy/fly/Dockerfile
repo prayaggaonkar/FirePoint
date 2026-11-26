@@ -8,14 +8,14 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 RUN set -eu; \
-    for bin in firerouter mockupstream sandbox; do \
+    for bin in firepoint mockupstream sandbox; do \
       CGO_ENABLED=0 go build -trimpath -buildvcs=false \
         -ldflags="-s -w -X main.version=${VERSION}" \
         -o "/out/${bin}" "./cmd/${bin}"; \
     done
 
 FROM gcr.io/distroless/static-debian12:nonroot
-COPY --from=build /out/firerouter /usr/local/bin/firerouter
+COPY --from=build /out/firepoint /usr/local/bin/firepoint
 COPY --from=build /out/mockupstream /usr/local/bin/mockupstream
 COPY --from=build /out/sandbox /usr/local/bin/sandbox
 COPY deploy/fly/router.json /config/router.json

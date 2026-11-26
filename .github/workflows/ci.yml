@@ -41,5 +41,5 @@ jobs:
           docker build -f deploy/Dockerfile \
             --build-arg VERSION=ci \
             --build-arg GO_VERSION=1.22.2 \
-            -t firerouter:ci .
-          docker run --rm firerouter:ci --version
+            -t firepoint:ci .
+          docker run --rm firepoint:ci --version

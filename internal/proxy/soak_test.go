@@ -8,8 +8,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/prayaggaonkar/firerouter/internal/breaker"
-	"github.com/prayaggaonkar/firerouter/internal/observability"
+	"github.com/prayaggaonkar/firepoint/internal/breaker"
+	"github.com/prayaggaonkar/firepoint/internal/observability"
 )
 
 // Run with -race. Many tenants send requests while keys reload and idle
@@ -29,7 +29,7 @@ func TestConcurrentTenantsReloadsAndEviction(t *testing.T) {
 	h.SetBreakers(breaker.NewRegistry(breaker.DefaultConfig()))
 	h.SetMetrics(observability.New())
 	keysPath := filepath.Join(t.TempDir(), "keys.json")
-	writeKeys(t, keysPath, "t", "fr-soak-key")
+	writeKeys(t, keysPath, "t", "fp-soak-key")
 	if err := h.ReloadKeys(keysPath); err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +59,7 @@ func TestConcurrentTenantsReloadsAndEviction(t *testing.T) {
 		go func(w int) {
 			defer wg.Done()
 			for i := 0; i < 20; i++ {
-				resp := postChat(t, proxy.URL, "Bearer fr-soak-key", `{"model":"m`+string(rune('a'+w))+`","stream":true,"max_tokens":1}`)
+				resp := postChat(t, proxy.URL, "Bearer fp-soak-key", `{"model":"m`+string(rune('a'+w))+`","stream":true,"max_tokens":1}`)
 				_, _ = io.Copy(io.Discard, resp.Body)
 				resp.Body.Close()
 				statuses <- resp.StatusCode

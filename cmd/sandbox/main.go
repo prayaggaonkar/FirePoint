@@ -1,5 +1,5 @@
-// Command sandbox runs the mock and firerouter in one process group.
-// The mock listens on 127.0.0.1 only. The public listener is firerouter.
+// Command sandbox runs the mock and firepoint in one process group.
+// The mock listens on 127.0.0.1 only. The public listener is firepoint.
 // The process exits before either child starts when FIREWORKS_API_KEY is set.
 package main
 
@@ -28,7 +28,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	routerPath, err := findBin("firerouter")
+	routerPath, err := findBin("firepoint")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -58,7 +58,7 @@ func main() {
 		_ = mock.Wait()
 		log.Fatal(err)
 	}
-	log.Printf("sandbox %s: mock on %s, firerouter on %s", version, mockAddr, listenAddr)
+	log.Printf("sandbox %s: mock on %s, firepoint on %s", version, mockAddr, listenAddr)
 
 	errCh := make(chan error, 2)
 	go func() { errCh <- mock.Wait() }()

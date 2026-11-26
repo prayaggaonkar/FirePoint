@@ -11,7 +11,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/prayaggaonkar/firerouter/internal/auth"
+	"github.com/prayaggaonkar/firepoint/internal/auth"
 )
 
 func TestValidKey(t *testing.T) {

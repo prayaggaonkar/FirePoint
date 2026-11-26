@@ -9,9 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/prayaggaonkar/firerouter/internal/auth"
-	"github.com/prayaggaonkar/firerouter/internal/proxy"
-	"github.com/prayaggaonkar/firerouter/internal/router"
+	"github.com/prayaggaonkar/firepoint/internal/auth"
+	"github.com/prayaggaonkar/firepoint/internal/proxy"
+	"github.com/prayaggaonkar/firepoint/internal/router"
 )
 
 func TestProxyForwardsNonStreamingChat(t *testing.T) {
@@ -46,8 +46,8 @@ func TestProxyForwardsNonStreamingChat(t *testing.T) {
 	if resp.Header.Get("Upgrade") != "" {
 		t.Fatalf("hop-by-hop Upgrade was forwarded: %q", resp.Header.Get("Upgrade"))
 	}
-	if resp.Header.Get("X-FireRouter-Model") != "small" {
-		t.Fatalf("model header %q", resp.Header.Get("X-FireRouter-Model"))
+	if resp.Header.Get("X-FirePoint-Model") != "small" {
+		t.Fatalf("model header %q", resp.Header.Get("X-FirePoint-Model"))
 	}
 	if string(seen) != body {
 		t.Fatalf("upstream body = %s", seen)
@@ -115,8 +115,8 @@ func TestProxyForwardsModelsEmbeddingsAndCompletions(t *testing.T) {
 	if err := json.NewDecoder(embed.Body).Decode(&emb); err != nil {
 		t.Fatal(err)
 	}
-	if emb.Model != "small" || embed.Header.Get("X-FireRouter-Model") != "small" {
-		t.Fatalf("embedding model %q header %q", emb.Model, embed.Header.Get("X-FireRouter-Model"))
+	if emb.Model != "small" || embed.Header.Get("X-FirePoint-Model") != "small" {
+		t.Fatalf("embedding model %q header %q", emb.Model, embed.Header.Get("X-FirePoint-Model"))
 	}
 
 	const textBody = `{"model":"small","prompt":"hi","future_field":true}`
@@ -173,8 +173,8 @@ func TestEmbeddingFallbackAndTokenBudget(t *testing.T) {
 		got, _ := io.ReadAll(resp.Body)
 		t.Fatalf("fallback status %d body %s", resp.StatusCode, got)
 	}
-	if resp.Header.Get("X-FireRouter-Model") != "small" {
-		t.Fatalf("header %q", resp.Header.Get("X-FireRouter-Model"))
+	if resp.Header.Get("X-FirePoint-Model") != "small" {
+		t.Fatalf("header %q", resp.Header.Get("X-FirePoint-Model"))
 	}
 
 	// 8 input bytes is 2 tokens, and the budget allows 1.

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/prayaggaonkar/firerouter/internal/auth"
+	"github.com/prayaggaonkar/firepoint/internal/auth"
 )
 
 func TestKeygenPrintsKeyOnceAndHashOnly(t *testing.T) {

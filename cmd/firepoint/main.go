@@ -14,12 +14,12 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/prayaggaonkar/firerouter/internal/auth"
-	"github.com/prayaggaonkar/firerouter/internal/breaker"
-	"github.com/prayaggaonkar/firerouter/internal/observability"
-	"github.com/prayaggaonkar/firerouter/internal/proxy"
-	"github.com/prayaggaonkar/firerouter/internal/ratelimit"
-	"github.com/prayaggaonkar/firerouter/internal/router"
+	"github.com/prayaggaonkar/firepoint/internal/auth"
+	"github.com/prayaggaonkar/firepoint/internal/breaker"
+	"github.com/prayaggaonkar/firepoint/internal/observability"
+	"github.com/prayaggaonkar/firepoint/internal/proxy"
+	"github.com/prayaggaonkar/firepoint/internal/ratelimit"
+	"github.com/prayaggaonkar/firepoint/internal/router"
 )
 
 // version is replaced by the image build: -ldflags "-X main.version=...".
@@ -109,7 +109,7 @@ func main() {
 
 	errCh := make(chan error, 1)
 	go func() {
-		log.Printf("firerouter %s listening on %s, upstream %s, rpm %d, tpm %d, max-body %d%s%s%s%s%s%s",
+		log.Printf("firepoint %s listening on %s, upstream %s, rpm %d, tpm %d, max-body %d%s%s%s%s%s%s",
 			version, opts.listen, opts.upstream, opts.rpm, opts.tpm, handler.MaxBody(), configNote(opts.configPath), keysNote(opts.keysPath), keyNote(apiKey), usageNote(opts.injectUsage), ipNote(opts.ipRPM), statusNote(opts.status))
 		errCh <- srv.ListenAndServe()
 	}()
@@ -159,8 +159,8 @@ type options struct {
 
 func defineFlags(fs *flag.FlagSet) *options {
 	opts := &options{}
-	fs.StringVar(&opts.listen, "listen", envOr("FIREROUTER_LISTEN", ":8080"), "listen address")
-	fs.StringVar(&opts.upstream, "upstream", envOr("FIREROUTER_UPSTREAM", "http://localhost:9000"), "upstream base URL")
+	fs.StringVar(&opts.listen, "listen", envOr("FIREPOINT_LISTEN", ":8080"), "listen address")
+	fs.StringVar(&opts.upstream, "upstream", envOr("FIREPOINT_UPSTREAM", "http://localhost:9000"), "upstream base URL")
 	fs.StringVar(&opts.configPath, "config", "", "JSON file of model fallbacks")
 	fs.StringVar(&opts.keysPath, "keys", "", "JSON file of tenant key hashes; empty allows every caller")
 	fs.IntVar(&opts.rpm, "rpm", 600, "requests per minute for one client")

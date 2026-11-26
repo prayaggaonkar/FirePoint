@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Five paired trials. Each trial is one loadgen run straight at the mock,
-# then the same run through FireRouter. Warmup is discarded by loadgen.
+# then the same run through FirePoint. Warmup is discarded by loadgen.
 # One JSON file is written per trial, under bench/results.
 set -euo pipefail
 
@@ -63,16 +63,16 @@ mkdir -p "$OUT"
 	>"$OUT/mock.log" 2>&1 &
 mock_pid=$!
 
-./bin/firerouter \
+./bin/firepoint \
 	-listen "$PROXY_ADDR" \
 	-upstream "http://$MOCK_ADDR" \
 	-rpm 1000000 \
 	-tpm 100000000 \
-	>"$OUT/firerouter.log" 2>&1 &
+	>"$OUT/firepoint.log" 2>&1 &
 proxy_pid=$!
 
 wait_http "http://$MOCK_ADDR/healthz" "$mock_pid" "$OUT/mock.log"
-wait_http "http://$PROXY_ADDR/healthz" "$proxy_pid" "$OUT/firerouter.log"
+wait_http "http://$PROXY_ADDR/healthz" "$proxy_pid" "$OUT/firepoint.log"
 
 GO_VERSION=$(go version)
 CPU_MODEL=$(awk -F: '/^model name/{gsub(/^ +/, "", $2); print $2; exit}' /proc/cpuinfo)

@@ -18,11 +18,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/prayaggaonkar/firerouter/internal/auth"
-	"github.com/prayaggaonkar/firerouter/internal/breaker"
-	"github.com/prayaggaonkar/firerouter/internal/observability"
-	"github.com/prayaggaonkar/firerouter/internal/ratelimit"
-	"github.com/prayaggaonkar/firerouter/internal/router"
+	"github.com/prayaggaonkar/firepoint/internal/auth"
+	"github.com/prayaggaonkar/firepoint/internal/breaker"
+	"github.com/prayaggaonkar/firepoint/internal/observability"
+	"github.com/prayaggaonkar/firepoint/internal/ratelimit"
+	"github.com/prayaggaonkar/firepoint/internal/router"
 )
 
 const maxRequestBody = 1 << 20 // 1 MB
@@ -40,7 +40,7 @@ const (
 )
 
 // servedModelHeader names the candidate that produced the committed response.
-const servedModelHeader = "X-FireRouter-Model"
+const servedModelHeader = "X-FirePoint-Model"
 
 // copyBufPool holds 16 KB scratch buffers for the response stream. The buffer
 // is only for the read/write loop; it is not a place to accumulate the body.
@@ -430,7 +430,7 @@ func (h *Handler) forward(w http.ResponseWriter, r *http.Request, resp *http.Res
 		h.metrics.Served(model)
 	}
 	if reqID != "" {
-		w.Header().Set("X-FireRouter-Request-ID", reqID)
+		w.Header().Set("X-FirePoint-Request-ID", reqID)
 	}
 	w.WriteHeader(resp.StatusCode)
 

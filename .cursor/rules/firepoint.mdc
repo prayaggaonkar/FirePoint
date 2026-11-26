@@ -1,13 +1,13 @@
 ---
-description: FireRouter product, stack, and working rules
+description: FirePoint product, stack, and working rules
 alwaysApply: true
 ---
 
-# FireRouter
+# FirePoint
 
 An open-source, low-latency streaming proxy that sits in front of Fireworks AI's
 OpenAI-compatible API (https://api.fireworks.ai/inference/v1/chat/completions).
-Apps send requests to FireRouter instead of Fireworks directly.
+Apps send requests to FirePoint instead of Fireworks directly.
 
 ## Eventual features (NOT all to be built now; we build in small steps)
 - Streaming SSE passthrough with no buffering (tokens forwarded the instant they arrive)

@@ -10,7 +10,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/prayaggaonkar/firerouter/internal/breaker"
+	"github.com/prayaggaonkar/firepoint/internal/breaker"
 )
 
 func TestUpstream429PassesThrough(t *testing.T) {
@@ -47,8 +47,8 @@ func TestUpstream429PassesThrough(t *testing.T) {
 		if strings.TrimSpace(string(body)) != errBody {
 			t.Fatalf("body = %s", body)
 		}
-		if resp.Header.Get("X-FireRouter-Model") != "big" {
-			t.Fatalf("fell back to %q", resp.Header.Get("X-FireRouter-Model"))
+		if resp.Header.Get("X-FirePoint-Model") != "big" {
+			t.Fatalf("fell back to %q", resp.Header.Get("X-FirePoint-Model"))
 		}
 	}
 	if hits.Load() != 2 {
@@ -83,8 +83,8 @@ func TestRequestIDIsForwardedAndLogged(t *testing.T) {
 	const prompt = "super-secret-prompt-zz"
 	resp := postChat(t, proxy.URL, "", `{"model":"m","messages":[{"role":"user","content":"`+prompt+`"}]}`)
 	resp.Body.Close()
-	if gotID == "" || resp.Header.Get("X-FireRouter-Request-ID") != gotID {
-		t.Fatalf("generated id upstream %q response %q", gotID, resp.Header.Get("X-FireRouter-Request-ID"))
+	if gotID == "" || resp.Header.Get("X-FirePoint-Request-ID") != gotID {
+		t.Fatalf("generated id upstream %q response %q", gotID, resp.Header.Get("X-FirePoint-Request-ID"))
 	}
 	if !strings.Contains(buf.String(), gotID) {
 		t.Fatalf("log %q does not contain the request id", buf.String())
@@ -106,8 +106,8 @@ func TestRequestIDIsForwardedAndLogged(t *testing.T) {
 		t.Fatal(err)
 	}
 	resp.Body.Close()
-	if gotID != "trace-123" || resp.Header.Get("X-FireRouter-Request-ID") != "trace-123" {
-		t.Fatalf("forwarded id upstream %q response %q", gotID, resp.Header.Get("X-FireRouter-Request-ID"))
+	if gotID != "trace-123" || resp.Header.Get("X-FirePoint-Request-ID") != "trace-123" {
+		t.Fatalf("forwarded id upstream %q response %q", gotID, resp.Header.Get("X-FirePoint-Request-ID"))
 	}
 	if !strings.Contains(buf.String(), "trace-123") {
 		t.Fatalf("log %q missing caller id", buf.String())

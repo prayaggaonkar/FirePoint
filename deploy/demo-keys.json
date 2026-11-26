@@ -2,13 +2,13 @@
   "tenants": [
     {
       "name": "noisy",
-      "key_sha256": "2ee594d99d180d0d3a66e33640bf84005af1c65ef6f5d9956ebd4ecef91494a8",
+      "key_sha256": "02b0b40d3ef0cf5cee7670a0588438c71a7a909802416c27916647ea0961dcfc",
       "rpm": 60,
       "tpm": 20000
     },
     {
       "name": "quiet",
-      "key_sha256": "40d17718580e2b8ab68390374d96427cfa0e61dca9cb80876f53b63e7ba2f7e2",
+      "key_sha256": "3499d77437513dec7f5945d859ac86992c8a2d209b1214e3f2fde680be037b7f",
       "rpm": 600,
       "tpm": 200000
     }

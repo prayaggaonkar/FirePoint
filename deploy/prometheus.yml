@@ -3,7 +3,7 @@ global:
   scrape_timeout: 1s
 
 scrape_configs:
-  - job_name: firerouter
+  - job_name: firepoint
     metrics_path: /metrics
     static_configs:
-      - targets: ["firerouter:8080"]
+      - targets: ["firepoint:8080"]

@@ -3,7 +3,7 @@
 # The load profile is separate:
 #   docker compose --env-file .env -f deploy/docker-compose.yml --profile load up loadgen
 
-name: firerouter
+name: firepoint
 
 services:
   mockupstream:
@@ -15,11 +15,11 @@ services:
     ports:
       - "9000:9000"
 
-  firerouter:
+  firepoint:
     build:
       context: ..
       dockerfile: deploy/Dockerfile
-    entrypoint: ["firerouter"]
+    entrypoint: ["firepoint"]
     command:
       - -listen
       - :8080
@@ -46,7 +46,7 @@ services:
     ports:
       - "9090:9090"
     depends_on:
-      - firerouter
+      - firepoint
 
   grafana:
     image: grafana/grafana:11.3.1
@@ -55,10 +55,10 @@ services:
       GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
       GF_AUTH_DISABLE_LOGIN_FORM: "false"
       GF_USERS_ALLOW_SIGN_UP: "false"
-      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /etc/grafana/dashboards/firerouter.json
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /etc/grafana/dashboards/firepoint.json
     volumes:
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
-      - ./grafana/firerouter.json:/etc/grafana/dashboards/firerouter.json:ro
+      - ./grafana/firepoint.json:/etc/grafana/dashboards/firepoint.json:ro
     ports:
       - "3000:3000"
     depends_on:
@@ -71,10 +71,10 @@ services:
       dockerfile: deploy/Dockerfile
     entrypoint: ["loadgen"]
     environment:
-      FIREROUTER_API_KEY: ${NOISY_API_KEY:-}
+      FIREPOINT_API_KEY: ${NOISY_API_KEY:-}
     command:
       - -url
-      - http://firerouter:8080/v1/chat/completions
+      - http://firepoint:8080/v1/chat/completions
       - -model
       - primary
       - -rate
@@ -88,4 +88,4 @@ services:
       - -json
       - /tmp/loadgen.json
     depends_on:
-      - firerouter
+      - firepoint

@@ -40,13 +40,13 @@ func TestHandlerExportsNames(t *testing.T) {
 
 	body := scrape(t, m.Handler())
 	for _, name := range []string{
-		"firerouter_ttft_seconds",
-		"firerouter_proxy_overhead_seconds",
-		"firerouter_active_streams 1",
-		`firerouter_upstream_status_total{status="200"} 1`,
-		`firerouter_ratelimit_rejections_total{tenant="alice"} 1`,
-		`firerouter_requests_total{model="small"} 1`,
-		`firerouter_breaker_state{model="small"} 0`,
+		"firepoint_ttft_seconds",
+		"firepoint_proxy_overhead_seconds",
+		"firepoint_active_streams 1",
+		`firepoint_upstream_status_total{status="200"} 1`,
+		`firepoint_ratelimit_rejections_total{tenant="alice"} 1`,
+		`firepoint_requests_total{model="small"} 1`,
+		`firepoint_breaker_state{model="small"} 0`,
 	} {
 		if !strings.Contains(body, name) {
 			t.Errorf("scrape missing %s", name)
@@ -97,7 +97,7 @@ func TestModelLabelsAreCapped(t *testing.T) {
 	rec := httptest.NewRecorder()
 	m.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
 	body := rec.Body.String()
-	series := strings.Count(body, "\nfirerouter_requests_total{")
+	series := strings.Count(body, "\nfirepoint_requests_total{")
 	if series != maxLabelValues+1 {
 		t.Fatalf("series = %d, want %d (cap plus %q)", series, maxLabelValues+1, overflowLabel)
 	}

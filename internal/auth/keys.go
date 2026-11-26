@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	keyPrefix = "fr-"
+	keyPrefix = "fp-"
 	keyRandom = 32
 	alphabet  = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 )
@@ -155,7 +155,7 @@ func HashKey(key string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// NewKey returns a virtual key, fr- plus 32 random letters and digits.
+// NewKey returns a virtual key, fp- plus 32 random letters and digits.
 // The caller prints it once. It is not written to the config.
 func NewKey() (string, error) {
 	buf := make([]byte, keyRandom)

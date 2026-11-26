@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/prayaggaonkar/firerouter/internal/auth"
+	"github.com/prayaggaonkar/firepoint/internal/auth"
 )
 
 // These tests build and start the real binaries, so flag parsing, signal
@@ -86,7 +86,7 @@ func startStack(t *testing.T, keys map[string]string, mockArgs ...string) *stack
 		t.Skip("builds binaries")
 	}
 	dir := t.TempDir()
-	routerBin := build(t, dir, ".", "firerouter")
+	routerBin := build(t, dir, ".", "firepoint")
 	mockBin := build(t, dir, "../mockupstream", "mockupstream")
 
 	s := &stack{dir: dir, keysPath: filepath.Join(dir, "keys.json")}
@@ -135,7 +135,7 @@ func (s *stack) chat(t *testing.T, key, model string) *http.Response {
 }
 
 func TestE2EAuthStreamAndFallback(t *testing.T) {
-	const key = "fr-e2e-alice-key"
+	const key = "fp-e2e-alice-key"
 	s := startStack(t, map[string]string{"alice": key}, "-first-token-delay", "1ms", "-token-interval", "1ms", "-tokens", "4")
 
 	resp := s.chat(t, "", "primary")
@@ -147,8 +147,8 @@ func TestE2EAuthStreamAndFallback(t *testing.T) {
 	resp = s.chat(t, key, "primary")
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK || resp.Header.Get("X-FireRouter-Model") != "primary" {
-		t.Fatalf("status %d model %q", resp.StatusCode, resp.Header.Get("X-FireRouter-Model"))
+	if resp.StatusCode != http.StatusOK || resp.Header.Get("X-FirePoint-Model") != "primary" {
+		t.Fatalf("status %d model %q", resp.StatusCode, resp.Header.Get("X-FirePoint-Model"))
 	}
 	if !strings.Contains(string(body), "[DONE]") {
 		t.Fatalf("stream did not finish: %q", body)
@@ -164,13 +164,13 @@ func TestE2EAuthStreamAndFallback(t *testing.T) {
 
 	resp = s.chat(t, key, "primary")
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK || resp.Header.Get("X-FireRouter-Model") != "fallback" {
-		t.Fatalf("after failure: status %d model %q, want fallback", resp.StatusCode, resp.Header.Get("X-FireRouter-Model"))
+	if resp.StatusCode != http.StatusOK || resp.Header.Get("X-FirePoint-Model") != "fallback" {
+		t.Fatalf("after failure: status %d model %q, want fallback", resp.StatusCode, resp.Header.Get("X-FirePoint-Model"))
 	}
 }
 
 func TestE2ESighupReloadsKeys(t *testing.T) {
-	const alice, bob = "fr-e2e-alice-key", "fr-e2e-bob-key"
+	const alice, bob = "fp-e2e-alice-key", "fp-e2e-bob-key"
 	s := startStack(t, map[string]string{"alice": alice}, "-first-token-delay", "1ms", "-token-interval", "1ms", "-tokens", "2")
 
 	resp := s.chat(t, bob, "primary")
@@ -197,7 +197,7 @@ func TestE2ESighupReloadsKeys(t *testing.T) {
 }
 
 func TestE2EShutdownLetsInflightStreamFinish(t *testing.T) {
-	const key = "fr-e2e-alice-key"
+	const key = "fp-e2e-alice-key"
 	s := startStack(t, map[string]string{"alice": key}, "-first-token-delay", "50ms", "-token-interval", "100ms", "-tokens", "8")
 
 	resp := s.chat(t, key, "primary")

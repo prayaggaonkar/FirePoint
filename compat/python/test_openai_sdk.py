@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Official OpenAI SDK against FireRouter and the mock. No real API key."""
+"""Official OpenAI SDK against FirePoint and the mock. No real API key."""
 
 import os
 import sys
@@ -150,10 +150,10 @@ def test_cancel(client):
 
 
 def main():
-    base = os.environ.get("FIREROUTER_BASE_URL", "")
+    base = os.environ.get("FIREPOINT_BASE_URL", "")
     if not base:
-        fail("FIREROUTER_BASE_URL is required")
-    client = OpenAI(base_url=base, api_key="firerouter-compat", max_retries=0, timeout=10.0)
+        fail("FIREPOINT_BASE_URL is required")
+    client = OpenAI(base_url=base, api_key="firepoint-compat", max_retries=0, timeout=10.0)
     try:
         test_non_stream(client)
         test_stream(client)

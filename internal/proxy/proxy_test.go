@@ -17,9 +17,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/prayaggaonkar/firerouter/internal/breaker"
-	"github.com/prayaggaonkar/firerouter/internal/ratelimit"
-	"github.com/prayaggaonkar/firerouter/internal/router"
+	"github.com/prayaggaonkar/firepoint/internal/breaker"
+	"github.com/prayaggaonkar/firepoint/internal/ratelimit"
+	"github.com/prayaggaonkar/firepoint/internal/router"
 )
 
 func TestChunksArriveAbout100msApart(t *testing.T) {
@@ -589,8 +589,8 @@ func TestBrokenModelFallsBackToSmall(t *testing.T) {
 		body, _ := io.ReadAll(resp.Body)
 		t.Fatalf("status %d, want 200, body %s", resp.StatusCode, body)
 	}
-	if got := resp.Header.Get("X-FireRouter-Model"); got != "small" {
-		t.Fatalf("X-FireRouter-Model = %q, want small", got)
+	if got := resp.Header.Get("X-FirePoint-Model"); got != "small" {
+		t.Fatalf("X-FirePoint-Model = %q, want small", got)
 	}
 	var served struct {
 		Model string `json:"model"`
@@ -645,8 +645,8 @@ func TestDialErrorFallsBackBeforeHeaders(t *testing.T) {
 		body, _ := io.ReadAll(resp.Body)
 		t.Fatalf("status %d, want 200, body %s", resp.StatusCode, body)
 	}
-	if got := resp.Header.Get("X-FireRouter-Model"); got != "small" {
-		t.Fatalf("X-FireRouter-Model = %q, want small", got)
+	if got := resp.Header.Get("X-FirePoint-Model"); got != "small" {
+		t.Fatalf("X-FirePoint-Model = %q, want small", got)
 	}
 }
 
@@ -686,9 +686,9 @@ func TestOpenBreakerSkipsToFallback(t *testing.T) {
 			resp.Body.Close()
 			t.Fatalf("request %d status %d, body %s", i+1, resp.StatusCode, body)
 		}
-		if got := resp.Header.Get("X-FireRouter-Model"); got != "small" {
+		if got := resp.Header.Get("X-FirePoint-Model"); got != "small" {
 			resp.Body.Close()
-			t.Fatalf("X-FireRouter-Model = %q, want small", got)
+			t.Fatalf("X-FirePoint-Model = %q, want small", got)
 		}
 		resp.Body.Close()
 	}
@@ -712,8 +712,8 @@ func TestAllCandidatesFailReturns503(t *testing.T) {
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("status %d, want 503", resp.StatusCode)
 	}
-	if got := resp.Header.Get("X-FireRouter-Model"); got != "" {
-		t.Fatalf("X-FireRouter-Model = %q, want empty", got)
+	if got := resp.Header.Get("X-FirePoint-Model"); got != "" {
+		t.Fatalf("X-FirePoint-Model = %q, want empty", got)
 	}
 }
 
@@ -740,8 +740,8 @@ func TestUpstream4xxIsNotRetried(t *testing.T) {
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("status %d, want 400", resp.StatusCode)
 	}
-	if got := resp.Header.Get("X-FireRouter-Model"); got != "big" {
-		t.Fatalf("X-FireRouter-Model = %q, want big", got)
+	if got := resp.Header.Get("X-FirePoint-Model"); got != "big" {
+		t.Fatalf("X-FirePoint-Model = %q, want big", got)
 	}
 	if got := hits.Load(); got != 1 {
 		t.Fatalf("upstream hits %d, want 1", got)
@@ -792,8 +792,8 @@ func TestNoFallbackAfterHeaders(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status %d, want 200", resp.StatusCode)
 	}
-	if got := resp.Header.Get("X-FireRouter-Model"); got != "big" {
-		t.Fatalf("X-FireRouter-Model = %q, want big", got)
+	if got := resp.Header.Get("X-FirePoint-Model"); got != "big" {
+		t.Fatalf("X-FirePoint-Model = %q, want big", got)
 	}
 	_, _ = io.Copy(io.Discard, resp.Body)
 	mu.Lock()

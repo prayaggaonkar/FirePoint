@@ -1,4 +1,4 @@
-# Static FireRouter binaries. The builder is the official Go image.
+# Static FirePoint binaries. The builder is the official Go image.
 # The final image is distroless static: CA certificates, no shell, no
 # package manager. The nonroot tag runs as uid 65532.
 
@@ -20,7 +20,7 @@ COPY . .
 # CGO off keeps the binaries static, which is what distroless static can run.
 # -trimpath removes local paths. -s -w drops the symbol table and debug info.
 RUN set -eu; \
-    for bin in firerouter mockupstream loadgen; do \
+    for bin in firepoint mockupstream loadgen; do \
       CGO_ENABLED=0 go build -trimpath -buildvcs=false \
         -ldflags="-s -w -X main.version=${VERSION}" \
         -o "/out/${bin}" "./cmd/${bin}"; \
@@ -30,10 +30,10 @@ FROM gcr.io/distroless/static-debian12:nonroot
 
 ARG VERSION=dev
 
-LABEL org.opencontainers.image.title="firerouter" \
+LABEL org.opencontainers.image.title="firepoint" \
       org.opencontainers.image.version="${VERSION}"
 
-COPY --from=build /out/firerouter /usr/local/bin/firerouter
+COPY --from=build /out/firepoint /usr/local/bin/firepoint
 COPY --from=build /out/mockupstream /usr/local/bin/mockupstream
 COPY --from=build /out/loadgen /usr/local/bin/loadgen
 
@@ -41,4 +41,4 @@ USER nonroot
 
 EXPOSE 8080
 
-ENTRYPOINT ["firerouter"]
+ENTRYPOINT ["firepoint"]

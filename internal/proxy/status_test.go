@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/prayaggaonkar/firerouter/internal/observability"
+	"github.com/prayaggaonkar/firepoint/internal/observability"
 )
 
 func TestStatusPageIsReadOnlyAndOmitsSecrets(t *testing.T) {

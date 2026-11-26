@@ -256,11 +256,11 @@ func TestDoOneSendsKeyAndModel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	out := doOne(context.Background(), srv.Client(), srv.URL, "fr-test", payload, time.Now)
+	out := doOne(context.Background(), srv.Client(), srv.URL, "fp-test", payload, time.Now)
 	if out.err != nil {
 		t.Fatal(out.err)
 	}
-	if gotAuth != "Bearer fr-test" {
+	if gotAuth != "Bearer fp-test" {
 		t.Fatalf("authorization %q", gotAuth)
 	}
 	if gotModel != "primary" {

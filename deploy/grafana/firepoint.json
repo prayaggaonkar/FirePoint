@@ -1,6 +1,6 @@
 {
-  "uid": "firerouter",
-  "title": "FireRouter",
+  "uid": "firepoint",
+  "title": "FirePoint",
   "timezone": "browser",
   "schemaVersion": 39,
   "refresh": "5s",
@@ -13,7 +13,7 @@
       "gridPos": {"h": 8, "w": 6, "x": 0, "y": 0},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "fieldConfig": {"defaults": {"unit": "short"}},
-      "targets": [{"expr": "firerouter_active_streams", "legendFormat": "streams"}]
+      "targets": [{"expr": "firepoint_active_streams", "legendFormat": "streams"}]
     },
     {
       "id": 2,
@@ -24,11 +24,11 @@
       "fieldConfig": {"defaults": {"unit": "s"}},
       "targets": [
         {
-          "expr": "histogram_quantile(0.50, sum by (le) (rate(firerouter_ttft_seconds_bucket[1m])))",
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(firepoint_ttft_seconds_bucket[1m])))",
           "legendFormat": "p50"
         },
         {
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(firerouter_ttft_seconds_bucket[1m])))",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(firepoint_ttft_seconds_bucket[1m])))",
           "legendFormat": "p99"
         }
       ]
@@ -42,7 +42,7 @@
       "fieldConfig": {"defaults": {"unit": "s"}},
       "targets": [
         {
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(firerouter_proxy_overhead_seconds_bucket[1m])))",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(firepoint_proxy_overhead_seconds_bucket[1m])))",
           "legendFormat": "p99"
         }
       ]
@@ -56,7 +56,7 @@
       "fieldConfig": {"defaults": {"min": 0, "max": 2, "decimals": 0}},
       "targets": [
         {
-          "expr": "firerouter_breaker_state",
+          "expr": "firepoint_breaker_state",
           "legendFormat": "{{model}}"
         }
       ]
@@ -70,7 +70,7 @@
       "fieldConfig": {"defaults": {"unit": "reqps"}},
       "targets": [
         {
-          "expr": "sum by (status) (rate(firerouter_upstream_status_total[1m]))",
+          "expr": "sum by (status) (rate(firepoint_upstream_status_total[1m]))",
           "legendFormat": "{{status}}"
         }
       ]
@@ -84,7 +84,7 @@
       "fieldConfig": {"defaults": {"unit": "reqps"}},
       "targets": [
         {
-          "expr": "sum by (tenant) (rate(firerouter_ratelimit_rejections_total[1m]))",
+          "expr": "sum by (tenant) (rate(firepoint_ratelimit_rejections_total[1m]))",
           "legendFormat": "{{tenant}}"
         }
       ]
@@ -98,7 +98,7 @@
       "fieldConfig": {"defaults": {"unit": "reqps"}},
       "targets": [
         {
-          "expr": "sum by (model) (rate(firerouter_requests_total[1m]))",
+          "expr": "sum by (model) (rate(firepoint_requests_total[1m]))",
           "legendFormat": "{{model}}"
         }
       ]

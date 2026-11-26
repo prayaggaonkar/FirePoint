@@ -1,6 +1,6 @@
-# FireRouter
+# FirePoint
 
-[DeepWiki](https://deepwiki.com/prayaggaonkar/FireRouter)
+[DeepWiki](https://deepwiki.com/prayaggaonkar/FirePoint)
 
 A streaming proxy for apps that call Fireworks through the OpenAI SDK and require per-tenant limits and failover without giving up first-token latency.
 
@@ -13,7 +13,7 @@ A streaming proxy for apps that call Fireworks through the OpenAI SDK and requir
 
 ## Demo
 
-No Fireworks key. The compose file points FireRouter at the mock.
+No Fireworks key. The compose file points FirePoint at the mock.
 
 ```bash
 docker compose -f deploy/docker-compose.yml up --build
@@ -27,19 +27,19 @@ A public Fly sandbox, still with no Fireworks key, is described in [deploy/fly/R
 
 ## Use it with your app
 
-Point the OpenAI SDK at FireRouter. The key here is a FireRouter virtual key, not the Fireworks key.
+Point the OpenAI SDK at FirePoint. The key here is a FirePoint virtual key, not the Fireworks key.
 
 ```python
 client = OpenAI(
     base_url="http://localhost:8080/v1",
-    api_key="fr-your-virtual-key",
+    api_key="fp-your-virtual-key",
 )
 ```
 
 ```javascript
 const client = new OpenAI({
   baseURL: "http://localhost:8080/v1",
-  apiKey: "fr-your-virtual-key",
+  apiKey: "fp-your-virtual-key",
 });
 ```
 
@@ -49,7 +49,7 @@ Against real Fireworks, set the upstream key in the environment and pass a tenan
 
 ```bash
 export FIREWORKS_API_KEY=your-fireworks-key
-./bin/firerouter -upstream https://api.fireworks.ai/inference -keys keys.json
+./bin/firepoint -upstream https://api.fireworks.ai/inference -keys keys.json
 ```
 
 The proxy then calls `https://api.fireworks.ai/inference/v1/chat/completions`. The same process also forwards `POST /v1/completions`, `POST /v1/embeddings`, and `GET /v1/models`.
@@ -95,8 +95,8 @@ SSE (server-sent event) is copied one read at a time and flushed on every chunk.
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `-listen` | `:8080` | Listen address. Env: `FIREROUTER_LISTEN`. |
-| `-upstream` | `http://localhost:9000` | Upstream base URL. Env: `FIREROUTER_UPSTREAM`. |
+| `-listen` | `:8080` | Listen address. Env: `FIREPOINT_LISTEN`. |
+| `-upstream` | `http://localhost:9000` | Upstream base URL. Env: `FIREPOINT_UPSTREAM`. |
 | `-keys` | empty | Tenant file. Empty allows every caller, and `-rpm` / `-tpm` apply to each caller. |
 | `-config` | empty | Fallback file. |
 | `-rpm` | `600` | Requests per minute when no key file is set. |
@@ -111,10 +111,10 @@ SSE (server-sent event) is copied one read at a time and flushed on every chunk.
 `FIREWORKS_API_KEY`, when set, is the only `Authorization` value sent upstream.
 
 ```bash
-./bin/firerouter keygen --tenant alice --rpm 600 --tpm 200000
+./bin/firepoint keygen --tenant alice --rpm 600 --tpm 200000
 ```
 
-That prints the virtual key once (`fr-` plus 32 random characters) and a JSON entry that stores the sha256 hash. SIGHUP reloads the key file. A file that does not parse leaves the previous keys in place.
+That prints the virtual key once (`fp-` plus 32 random characters) and a JSON entry that stores the sha256 hash. SIGHUP reloads the key file. A file that does not parse leaves the previous keys in place.
 
 Key file:
 
@@ -138,7 +138,7 @@ Fallback file:
 {"models":{"primary":{"fallbacks":["fallback"]}}}
 ```
 
-A name with no entry is tried alone. Fallbacks of fallbacks are not followed. The response header `X-FireRouter-Model` is the model that served.
+A name with no entry is tried alone. Fallbacks of fallbacks are not followed. The response header `X-FirePoint-Model` is the model that served.
 
 Breaker settings are compiled in, not in the file: 30 second window, at least 20 samples, open at a 50% error rate, stay open 15 seconds, then allow 3 probes. Request bodies are capped at 1 MB unless `-max-body` sets another size.
 
@@ -161,19 +161,19 @@ On 20 Nov 2026 the proxy was pointed at `https://api.fireworks.ai/inference`. Th
 - `POST /v1/completions` with the prompt `ok` returned 200 and was one upstream call.
 - `POST /v1/embeddings` with the input `ok` returned 400, `embedding is not supported`. That was one upstream call and it was not retried. This model does not serve embeddings.
 - With `-keys`: a missing virtual key was 401 and the upstream status counter did not move. A model outside `allowed_models` was 403 and the counter did not move. A valid virtual key was one 200 generation.
-- With `-rpm 1`, the first chat was 200 and the second, in the same minute, was 429 from FireRouter with `Retry-After: 60`. The upstream status counter moved by 1.
+- With `-rpm 1`, the first chat was 200 and the second, in the same minute, was 429 from FirePoint with `Retry-After: 60`. The upstream status counter moved by 1.
 - A model name that does not exist still returns Fireworks' 404, `Model not found, inaccessible, and/or not deployed`. The proxy forwards that status. Fallback runs on connection failures and on 500, 502, 503, and 504, not on 404. That 404 check was the earlier call on the same day, not part of the 22.
 
-Responses carried `X-FireRouter-Model`, `X-FireRouter-Request-ID`, and Fireworks' `X-Request-Id` and `X-Ratelimit-Over-Limit`.
+Responses carried `X-FirePoint-Model`, `X-FirePoint-Request-ID`, and Fireworks' `X-Request-Id` and `X-Ratelimit-Over-Limit`.
 
-After those checks, eight streaming chats went straight to Fireworks and eight went through FireRouter, one at a time, same model and `max_tokens`. Time to first `data:` line, on a Darwin 25.6.0 arm64 machine:
+After those checks, eight streaming chats went straight to Fireworks and eight went through FirePoint, one at a time, same model and `max_tokens`. Time to first `data:` line, on a Darwin 25.6.0 arm64 machine:
 
-| | direct | through FireRouter | proxy minus direct |
+| | direct | through FirePoint | proxy minus direct |
 |---|---:|---:|---:|
 | p50 | 236.5 ms | 224.8 ms | -11.7 ms |
 | p90 | 254.4 ms | 226.4 ms | -28.0 ms |
 
-Each side used 304 tokens. Eight calls is a sample. The direct times already spread from about 219 ms to 267 ms, so the negative difference is noise, not a claim that the proxy is faster. `GET /metrics` on that proxy process showed `firerouter_ttft_seconds` and `firerouter_proxy_overhead_seconds` at 8 observations each.
+Each side used 304 tokens. Eight calls is a sample. The direct times already spread from about 219 ms to 267 ms, so the negative difference is noise, not a claim that the proxy is faster. `GET /metrics` on that proxy process showed `firepoint_ttft_seconds` and `firepoint_proxy_overhead_seconds` at 8 observations each.
 
 Not measured live: a breaker trip, failover in the middle of a stream, and the 0.128 ms mock overhead in the table above. The mock table stays the mock result. `bench/run_bench.sh` was not pointed at Fireworks.
 
@@ -192,4 +192,4 @@ make build
 make test
 ```
 
-`make build` writes `bin/firerouter`, `bin/mockupstream`, and `bin/loadgen`. `make test` runs `go vet ./...` and `go test -race ./...`. A local build prints version `dev`.
+`make build` writes `bin/firepoint`, `bin/mockupstream`, and `bin/loadgen`. `make test` runs `go vet ./...` and `go test -race ./...`. A local build prints version `dev`.

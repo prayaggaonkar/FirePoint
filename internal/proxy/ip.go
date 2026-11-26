@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/prayaggaonkar/firerouter/internal/ratelimit"
+	"github.com/prayaggaonkar/firepoint/internal/ratelimit"
 )
 
 // ClientIP is the address the per-IP limit applies to.

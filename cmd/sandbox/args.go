@@ -6,7 +6,7 @@ import (
 )
 
 // Limits for the public mock-backed process. They are stricter than the
-// defaults used by a private firerouter, and they are the values the status
+// defaults used by a private firepoint, and they are the values the status
 // page reports because the sandbox passes them as flags.
 const (
 	mockAddr    = "127.0.0.1:9000"

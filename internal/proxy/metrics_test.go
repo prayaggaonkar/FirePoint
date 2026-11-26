@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/prayaggaonkar/firerouter/internal/breaker"
-	"github.com/prayaggaonkar/firerouter/internal/observability"
+	"github.com/prayaggaonkar/firepoint/internal/breaker"
+	"github.com/prayaggaonkar/firepoint/internal/observability"
 )
 
 func TestMetricsSeparateOverheadFromUpstreamWait(t *testing.T) {
@@ -42,8 +42,8 @@ func TestMetricsSeparateOverheadFromUpstreamWait(t *testing.T) {
 	if strings.Contains(body, "sk-test-secret") || strings.Contains(body, "super-secret-prompt-text") {
 		t.Fatal("metrics included the prompt or the API key")
 	}
-	ttft := metricValue(t, body, "firerouter_ttft_seconds_sum")
-	overhead := metricValue(t, body, "firerouter_proxy_overhead_seconds_sum")
+	ttft := metricValue(t, body, "firepoint_ttft_seconds_sum")
+	overhead := metricValue(t, body, "firepoint_proxy_overhead_seconds_sum")
 	if ttft < pause.Seconds()/2 {
 		t.Fatalf("ttft %fs, upstream paused %s", ttft, pause)
 	}
@@ -51,16 +51,16 @@ func TestMetricsSeparateOverheadFromUpstreamWait(t *testing.T) {
 	if overhead >= ttft/2 {
 		t.Fatalf("overhead %fs is not smaller than ttft %fs", overhead, ttft)
 	}
-	if got := metricValue(t, body, `firerouter_upstream_status_total{status="200"}`); got != 1 {
+	if got := metricValue(t, body, `firepoint_upstream_status_total{status="200"}`); got != 1 {
 		t.Fatalf("status counter %v", got)
 	}
-	if got := metricValue(t, body, `firerouter_requests_total{model="metrics-model"}`); got != 1 {
+	if got := metricValue(t, body, `firepoint_requests_total{model="metrics-model"}`); got != 1 {
 		t.Fatalf("served requests %v", got)
 	}
-	if got := metricValue(t, body, `firerouter_breaker_state{model="metrics-model"}`); got != float64(breaker.Closed) {
+	if got := metricValue(t, body, `firepoint_breaker_state{model="metrics-model"}`); got != float64(breaker.Closed) {
 		t.Fatalf("breaker state %v", got)
 	}
-	if got := metricValue(t, body, "firerouter_active_streams"); got != 0 {
+	if got := metricValue(t, body, "firepoint_active_streams"); got != 0 {
 		t.Fatalf("active streams %v after the response finished", got)
 	}
 }
@@ -117,7 +117,7 @@ func TestMetricsCountRateLimitBreakerAndActiveStream(t *testing.T) {
 	var active float64
 	var found bool
 	for {
-		active, found = metricValueOK(scrapeMetrics(t, m), "firerouter_active_streams")
+		active, found = metricValueOK(scrapeMetrics(t, m), "firepoint_active_streams")
 		if found && active == 1 || time.Now().After(deadline) {
 			break
 		}
@@ -130,7 +130,7 @@ func TestMetricsCountRateLimitBreakerAndActiveStream(t *testing.T) {
 	if err := <-errCh; err != nil {
 		t.Fatal(err)
 	}
-	if got := metricValue(t, scrapeMetrics(t, m), "firerouter_active_streams"); got != 0 {
+	if got := metricValue(t, scrapeMetrics(t, m), "firepoint_active_streams"); got != 0 {
 		t.Fatalf("active streams %v after close", got)
 	}
 
@@ -139,7 +139,7 @@ func TestMetricsCountRateLimitBreakerAndActiveStream(t *testing.T) {
 	if limited.StatusCode != http.StatusTooManyRequests {
 		t.Fatalf("status %d, want 429", limited.StatusCode)
 	}
-	if got := metricValue(t, scrapeMetrics(t, m), "firerouter_ratelimit_rejections_total"); got != 1 {
+	if got := metricValue(t, scrapeMetrics(t, m), "firepoint_ratelimit_rejections_total"); got != 1 {
 		t.Fatalf("rejections %v", got)
 	}
 
@@ -156,10 +156,10 @@ func TestMetricsCountRateLimitBreakerAndActiveStream(t *testing.T) {
 	resp := postChat(t, proxy2.URL, "", `{"model":"big"}`)
 	resp.Body.Close()
 	body := scrapeMetrics(t, m)
-	if got := metricValue(t, body, `firerouter_upstream_status_total{status="503"}`); got != 1 {
+	if got := metricValue(t, body, `firepoint_upstream_status_total{status="503"}`); got != 1 {
 		t.Fatalf("503 counter %v", got)
 	}
-	if got := metricValue(t, body, `firerouter_breaker_state{model="big"}`); got != float64(breaker.Open) {
+	if got := metricValue(t, body, `firepoint_breaker_state{model="big"}`); got != float64(breaker.Open) {
 		t.Fatalf("breaker state %v, want open (%v)", got, float64(breaker.Open))
 	}
 }

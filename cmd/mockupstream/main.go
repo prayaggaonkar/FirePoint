@@ -388,7 +388,7 @@ func (h *handler) models(w http.ResponseWriter, r *http.Request) {
 		"data": []map[string]any{{
 			"id":       "mock",
 			"object":   "model",
-			"owned_by": "firerouter",
+			"owned_by": "firepoint",
 		}},
 	})
 }

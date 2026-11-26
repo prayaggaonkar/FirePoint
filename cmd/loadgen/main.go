@@ -36,7 +36,7 @@ func main() {
 	jsonPath := flag.String("json", "loadgen.json", "file for the JSON summary")
 	model := flag.String("model", "mock", "model name in the request body")
 	maxTokens := flag.Int("max-tokens", 0, "max_tokens in the request body; 0 omits the field")
-	apiKey := flag.String("api-key", os.Getenv("FIREROUTER_API_KEY"), "virtual key sent as Authorization; empty sends no key")
+	apiKey := flag.String("api-key", os.Getenv("FIREPOINT_API_KEY"), "virtual key sent as Authorization; empty sends no key")
 	flag.Parse()
 
 	if *rate <= 0 || *duration <= 0 || *concurrency < 1 || *warmup < 0 {

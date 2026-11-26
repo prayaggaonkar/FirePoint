@@ -15,7 +15,7 @@ The mock waits 200 ms before its first token, then sends 50 tokens with 20 ms be
 
 ```bash
 ./bin/mockupstream -addr 127.0.0.1:19110 -first-token-delay 200ms -token-interval 20ms -tokens 50
-./bin/firerouter -listen 127.0.0.1:18090 -upstream http://127.0.0.1:19110 -rpm 1000000 -tpm 100000000
+./bin/firepoint -listen 127.0.0.1:18090 -upstream http://127.0.0.1:19110 -rpm 1000000 -tpm 100000000
 ```
 
 The request and token budgets were raised so a rejection would not be mistaken for proxy delay. No tenant key file was used.
@@ -46,7 +46,7 @@ The gap between tokens was about 20.6 ms on both paths. The proxy median was wit
 
 ## Reproduce
 
-`bench/run_bench.sh` builds the binaries, starts the mock at a 200 ms first-token delay and a 20 ms interval, and runs five paired trials. Each trial is loadgen straight at the mock, then the same rate, duration, and 10 s warmup through FireRouter. One JSON file is written per trial. `bench/analyze.py` prints the median, min, and max of each percentile.
+`bench/run_bench.sh` builds the binaries, starts the mock at a 200 ms first-token delay and a 20 ms interval, and runs five paired trials. Each trial is loadgen straight at the mock, then the same rate, duration, and 10 s warmup through FirePoint. One JSON file is written per trial. `bench/analyze.py` prints the median, min, and max of each percentile.
 
 ```bash
 ./bench/run_bench.sh

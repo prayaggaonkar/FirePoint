@@ -1,5 +1,5 @@
 {
-  "name": "firerouter-compat",
+  "name": "firepoint-compat",
   "private": true,
   "type": "module",
   "dependencies": {

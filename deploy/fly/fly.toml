@@ -1,7 +1,7 @@
 # Public mock-backed sandbox. Do not set FIREWORKS_API_KEY.
 # The process exits on startup if that variable is present.
 # Change app to a name that is free on your Fly account.
-app = "firerouter-sandbox"
+app = "firepoint-sandbox"
 primary_region = "sjc"
 
 [build]

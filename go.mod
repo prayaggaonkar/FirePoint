@@ -1,4 +1,4 @@
-module github.com/prayaggaonkar/firerouter
+module github.com/prayaggaonkar/firepoint
 
 go 1.22.2
 

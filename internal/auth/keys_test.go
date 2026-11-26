@@ -13,10 +13,10 @@ func TestValidKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(key, "fr-") || len(key) != len("fr-")+32 {
-		t.Fatalf("key %q is not fr- plus 32 chars", key)
+	if !strings.HasPrefix(key, "fp-") || len(key) != len("fp-")+32 {
+		t.Fatalf("key %q is not fp- plus 32 chars", key)
 	}
-	for _, c := range key[len("fr-"):] {
+	for _, c := range key[len("fp-"):] {
 		if !strings.ContainsRune(alphabet, c) {
 			t.Fatalf("key %q has %q outside the alphabet", key, c)
 		}
@@ -64,7 +64,7 @@ func TestBadKey(t *testing.T) {
 	}
 	for _, header := range []string{
 		"Bearer " + other,
-		"Bearer fr-" + strings.Repeat("a", 32),
+		"Bearer fp-" + strings.Repeat("a", 32),
 		"Bearer " + key + " extra",
 		"Basic " + key,
 		"",
@@ -92,7 +92,7 @@ func TestBadKey(t *testing.T) {
 }
 
 func TestModelNotAllowedWhenListIsEmpty(t *testing.T) {
-	key := "fr-" + strings.Repeat("a", 32)
+	key := "fp-" + strings.Repeat("a", 32)
 	store, err := New(File{Tenants: []Tenant{{
 		Name: "alice", KeySHA256: HashKey(key), RPM: 1, TPM: 1,
 		AllowedModels: []string{},
@@ -170,7 +170,7 @@ func TestReloadReplacesTheStore(t *testing.T) {
 }
 
 func TestRejectsBadConfig(t *testing.T) {
-	good := HashKey("fr-" + strings.Repeat("b", 32))
+	good := HashKey("fp-" + strings.Repeat("b", 32))
 	cases := []File{
 		{},
 		{Tenants: []Tenant{{Name: "a", KeySHA256: good, RPM: 0, TPM: 1}}},
@@ -182,7 +182,7 @@ func TestRejectsBadConfig(t *testing.T) {
 		}},
 		{Tenants: []Tenant{
 			{Name: "a", KeySHA256: good, RPM: 1, TPM: 1},
-			{Name: "a", KeySHA256: HashKey("fr-" + strings.Repeat("c", 32)), RPM: 2, TPM: 1},
+			{Name: "a", KeySHA256: HashKey("fp-" + strings.Repeat("c", 32)), RPM: 2, TPM: 1},
 		}},
 	}
 	for _, file := range cases {

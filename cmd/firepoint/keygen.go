@@ -8,7 +8,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/prayaggaonkar/firerouter/internal/auth"
+	"github.com/prayaggaonkar/firepoint/internal/auth"
 )
 
 // keygen prints a new virtual key once, then the config entry that stores

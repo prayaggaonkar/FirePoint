@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/prayaggaonkar/firerouter/internal/ratelimit"
+	"github.com/prayaggaonkar/firepoint/internal/ratelimit"
 )
 
 func TestClientIPPrefersFlyHeaderAndIgnoresForwardedFor(t *testing.T) {

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Four-act laptop demo. The mock is on :9000 and FireRouter is on :8080.
+# Four-act laptop demo. The mock is on :9000 and FirePoint is on :8080.
 # Keys come from .env. The mock admin token defaults to "demo", matching
 # deploy/docker-compose.yml.
 set -euo pipefail
@@ -123,7 +123,7 @@ one_chat() {
 		-H 'Content-Type: application/json' \
 		-d '{"model":"primary","stream":false,"max_tokens":16,"messages":[{"role":"user","content":"hi"}]}' \
 		"$PROXY/v1/chat/completions" || echo ERR)
-	model=$(grep -i '^X-FireRouter-Model:' "$hdr" | awk '{print $2}' | tr -d '\r' || true)
+	model=$(grep -i '^X-FirePoint-Model:' "$hdr" | awk '{print $2}' | tr -d '\r' || true)
 	printf '%s  status=%s  model=%s\n' "$(date +%H:%M:%S)" "$code" "${model:-none}"
 	rm -f "$out" "$hdr"
 	local elapsed=$(( $(date +%s%3N) - started ))
@@ -159,7 +159,7 @@ wait_for_line() {
 breaker_value() {
 	local model=$1
 	curl -sf "$PROXY/metrics" | awk -v model="$model" '
-		index($0, "firerouter_breaker_state{") && index($0, "model=\"" model "\"") { print $2; found=1 }
+		index($0, "firepoint_breaker_state{") && index($0, "model=\"" model "\"") { print $2; found=1 }
 		END { if (!found) print "missing" }
 	'
 }
@@ -193,7 +193,7 @@ act_drop_in() {
 
 act_overhead() {
 	header "2. Overhead"
-	note "loadgen for 20s against the mock, then 20s through FireRouter."
+	note "loadgen for 20s against the mock, then 20s through FirePoint."
 	ensure_loadgen
 	local direct=$log_dir/direct.json proxy=$log_dir/proxy.json
 	bin/loadgen -url "$MOCK/v1/chat/completions" -model primary \

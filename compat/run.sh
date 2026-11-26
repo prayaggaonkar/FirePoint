@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build FireRouter and the mock, then run the OpenAI SDK suites against them.
+# Build FirePoint and the mock, then run the OpenAI SDK suites against them.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -17,7 +17,7 @@ INTERVAL_MS=150
 
 mkdir -p bin
 go build -o bin/mockupstream ./cmd/mockupstream
-go build -o bin/firerouter ./cmd/firerouter
+go build -o bin/firepoint ./cmd/firepoint
 
 mock_log=$(mktemp)
 proxy_log=$(mktemp)
@@ -28,7 +28,7 @@ proxy_log=$(mktemp)
   -token-interval "${INTERVAL_MS}ms" \
   >"$mock_log" 2>&1 &
 mock_pid=$!
-./bin/firerouter \
+./bin/firepoint \
   -listen "127.0.0.1:${PROXY_PORT}" \
   -upstream "http://127.0.0.1:${MOCK_PORT}" \
   >"$proxy_log" 2>&1 &
@@ -65,13 +65,13 @@ fi
 compat/python/.venv/bin/pip install -q -r compat/python/requirements.txt
 (cd compat/js && npm ci --silent)
 
-export FIREROUTER_BASE_URL="http://127.0.0.1:${PROXY_PORT}/v1"
+export FIREPOINT_BASE_URL="http://127.0.0.1:${PROXY_PORT}/v1"
 export MOCK_TOKENS="$TOKENS"
 export MOCK_FIRST_MS="$FIRST_MS"
 export MOCK_INTERVAL_MS="$INTERVAL_MS"
 export MOCK_LOG="$mock_log"
 
-echo "compat proxy ${FIREROUTER_BASE_URL} mock :${MOCK_PORT}"
+echo "compat proxy ${FIREPOINT_BASE_URL} mock :${MOCK_PORT}"
 
 set +e
 compat/python/.venv/bin/python compat/python/test_openai_sdk.py

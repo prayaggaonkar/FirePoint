@@ -1,4 +1,4 @@
-// Official OpenAI SDK against FireRouter and the mock. No real API key.
+// Official OpenAI SDK against FirePoint and the mock. No real API key.
 import { readFileSync } from "node:fs";
 
 import OpenAI from "openai";
@@ -66,9 +66,9 @@ async function waitDisconnect(before) {
 }
 
 function client() {
-  const baseURL = process.env.FIREROUTER_BASE_URL;
-  if (!baseURL) fail("FIREROUTER_BASE_URL is required");
-  return new OpenAI({ baseURL, apiKey: "firerouter-compat", maxRetries: 0, timeout: 10_000 });
+  const baseURL = process.env.FIREPOINT_BASE_URL;
+  if (!baseURL) fail("FIREPOINT_BASE_URL is required");
+  return new OpenAI({ baseURL, apiKey: "firepoint-compat", maxRetries: 0, timeout: 10_000 });
 }
 
 async function testNonStream(openai) {

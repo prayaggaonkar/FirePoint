@@ -42,7 +42,7 @@ func TestNilRouterTriesTheRequestedModel(t *testing.T) {
 
 func TestLoadReadsFallbacks(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "firerouter.json")
+	path := filepath.Join(dir, "firepoint.json")
 	body := []byte(`{"models":{"big-broken":{"fallbacks":["small"]}}}`)
 	if err := os.WriteFile(path, body, 0o644); err != nil {
 		t.Fatal(err)
@@ -58,7 +58,7 @@ func TestLoadReadsFallbacks(t *testing.T) {
 
 func TestLoadRejectsInvalidJSON(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "firerouter.json")
+	path := filepath.Join(dir, "firepoint.json")
 	if err := os.WriteFile(path, []byte(`{"models"`), 0o644); err != nil {
 		t.Fatal(err)
 	}

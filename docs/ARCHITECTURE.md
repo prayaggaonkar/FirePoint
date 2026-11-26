@@ -1,6 +1,6 @@
 # Architecture
 
-FireRouter sits in front of a model server. An app sends an OpenAI-compatible request. FireRouter checks the caller, checks that caller's budget, picks a model, and copies the answer back one piece at a time. It does not run the model.
+FirePoint sits in front of a model server. An app sends an OpenAI-compatible request. FirePoint checks the caller, checks that caller's budget, picks a model, and copies the answer back one piece at a time. It does not run the model.
 
 The production model server is Fireworks: `https://api.fireworks.ai/inference/v1/...`. `mockupstream` is the stand-in used by tests and the demo.
 
@@ -27,13 +27,13 @@ Routes: `POST /v1/chat/completions`, `POST /v1/completions`, `POST /v1/embedding
 
 ## Steps
 
-1. With `-keys`, the `Authorization: Bearer fr-…` value is hashed and compared with the sha256 hashes in the file. The comparison does not stop at the first different byte. The tenant name next to the matching hash is the budget name and the `tenant` label on rate-limit rejections. A missing or unknown key is 401, and the body is not read. `allowed_models`, when set, rejects any other model with 403. With no key file, every caller is allowed and the budget name is a hash of whatever header they sent. `firerouter keygen` prints a new key once and the hash to store.
+1. With `-keys`, the `Authorization: Bearer fp-…` value is hashed and compared with the sha256 hashes in the file. The comparison does not stop at the first different byte. The tenant name next to the matching hash is the budget name and the `tenant` label on rate-limit rejections. A missing or unknown key is 401, and the body is not read. `allowed_models`, when set, rejects any other model with 403. With no key file, every caller is allowed and the budget name is a hash of whatever header they sent. `firepoint keygen` prints a new key once and the hash to store.
 2. The body is read, up to 1 MB.
 3. The budget is checked before the upstream call. With a key file, `rpm` and `tpm` come from that tenant. Otherwise the process flags apply (`-rpm` 600, `-tpm` 200000). The reserve is about 4 characters per token, plus 4 tokens per message, plus `max_tokens` (1024 when the field is absent). `-inject-usage` asks a streamed chat for a usage chunk and refunds the difference. With the flag off, the reserve stands.
 4. The candidate list is the requested model, then the names under `fallbacks`, in order. Fallbacks of fallbacks are not followed. A name with no entry is tried alone.
 5. Each model has its own breaker. After 20 samples in 30 seconds, an error rate of at least 50% opens it for 15 seconds and new calls skip that model. Then 3 probes are allowed. Success closes it and clears the window. A failure is a dropped connection, headers that never arrive within `-upstream-header-timeout` (60 seconds by default), or status 500, 502, 503, or 504. A 400-class status is the caller's problem and is not a sample. An upstream 429 is a backoff, not a failure, and is passed through.
 6. The upstream body uses the candidate's model name. `FIREWORKS_API_KEY`, when set, is the only `Authorization` value the model server sees. The caller's key is not copied.
-7. Headers are the commit point. A failure before headers, or a 5xx, tries the next candidate. The first good response is the one the app sees. `X-FireRouter-Model` names it. After that, each read is written and flushed. A break in the middle of the answer is not retried. A 404 is forwarded as-is. On 20 Nov 2026, Fireworks used 404 for a model name that was not deployed, so a typo did not fall over to the next model.
+7. Headers are the commit point. A failure before headers, or a 5xx, tries the next candidate. The first good response is the one the app sees. `X-FirePoint-Model` names it. After that, each read is written and flushed. A break in the middle of the answer is not retried. A 404 is forwarded as-is. On 20 Nov 2026, Fireworks used 404 for a model name that was not deployed, so a typo did not fall over to the next model.
 8. If the app disconnects, the request context is cancelled, and so is the upstream call.
 
 ## Why the stream is not buffered
@@ -58,11 +58,11 @@ Rate limits are in memory in that process. See [TUNING.md](TUNING.md) for file d
 
 | Program | Role |
 |---|---|
-| `firerouter` | The proxy. |
+| `firepoint` | The proxy. |
 | `mockupstream` | A fake model. A model name containing `broken` returns 503. |
 | `loadgen` | Sends chats on a fixed timer and reports wait times. |
-| `sandbox` | Runs `mockupstream` on `127.0.0.1` and `firerouter` in front of it. Exits if `FIREWORKS_API_KEY` is set. Used by the Fly config in `deploy/fly/`. |
+| `sandbox` | Runs `mockupstream` on `127.0.0.1` and `firepoint` in front of it. Exits if `FIREWORKS_API_KEY` is set. Used by the Fly config in `deploy/fly/`. |
 
 `loadgen` measures from send until the first `data:` line. The proxy's own metric measures until the first response byte, which is a few bytes earlier.
 
-On 20 Nov 2026 a process with `FIREWORKS_API_KEY` set and `-upstream https://api.fireworks.ai/inference` ran a capped check against `accounts/fireworks/models/nemotron-lightning-3p5-30b-a3b` (`max_tokens` 16): model list, non-streaming and streaming chat, completions (200), embeddings (400, this model does not embed), one stream with `-inject-usage`, virtual-key 401 / 200 / 403, and an `-rpm 1` pair whose second call was 429 from FireRouter after one upstream call. Stored chat usage was 798 tokens across 22 accepted generations. Eight direct streams and eight proxy streams, one at a time on Darwin 25.6.0 arm64, had first-`data:` p50 of 236.5 ms direct and 224.8 ms through the proxy (p90 254.4 ms and 226.4 ms). That gap is inside the spread of eight calls. A missing model name came back as 404 and was not retried. A breaker trip, mid-stream failover, and the 0.128 ms mock overhead were not measured live.
+On 20 Nov 2026 a process with `FIREWORKS_API_KEY` set and `-upstream https://api.fireworks.ai/inference` ran a capped check against `accounts/fireworks/models/nemotron-lightning-3p5-30b-a3b` (`max_tokens` 16): model list, non-streaming and streaming chat, completions (200), embeddings (400, this model does not embed), one stream with `-inject-usage`, virtual-key 401 / 200 / 403, and an `-rpm 1` pair whose second call was 429 from FirePoint after one upstream call. Stored chat usage was 798 tokens across 22 accepted generations. Eight direct streams and eight proxy streams, one at a time on Darwin 25.6.0 arm64, had first-`data:` p50 of 236.5 ms direct and 224.8 ms through the proxy (p90 254.4 ms and 226.4 ms). That gap is inside the spread of eight calls. A missing model name came back as 404 and was not retried. A breaker trip, mid-stream failover, and the 0.128 ms mock overhead were not measured live.

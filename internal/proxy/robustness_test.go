@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/prayaggaonkar/firerouter/internal/breaker"
-	"github.com/prayaggaonkar/firerouter/internal/observability"
+	"github.com/prayaggaonkar/firepoint/internal/breaker"
+	"github.com/prayaggaonkar/firepoint/internal/observability"
 )
 
 func TestSlowHeadersWithinTimeoutAreServed(t *testing.T) {
@@ -149,7 +149,7 @@ func TestOpenModeRateLimitLabelDoesNotLeakKeyHashes(t *testing.T) {
 	rec := httptest.NewRecorder()
 	m.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
 	sb.WriteString(rec.Body.String())
-	if !strings.Contains(sb.String(), `firerouter_ratelimit_rejections_total{tenant="anonymous"} 2`) {
+	if !strings.Contains(sb.String(), `firepoint_ratelimit_rejections_total{tenant="anonymous"} 2`) {
 		t.Fatalf("want two rejections under tenant=anonymous:\n%s", sb.String())
 	}
 }

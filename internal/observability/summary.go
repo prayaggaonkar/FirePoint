@@ -49,19 +49,19 @@ func (m *Metrics) Summary() Summary {
 	}
 	for _, f := range families {
 		switch f.GetName() {
-		case "firerouter_active_streams":
+		case "firepoint_active_streams":
 			s.ActiveStreams = gaugeValue(f)
-		case "firerouter_requests_total":
+		case "firepoint_requests_total":
 			s.Requests = labeled(f, "model")
-		case "firerouter_upstream_status_total":
+		case "firepoint_upstream_status_total":
 			s.Upstream = labeled(f, "status")
-		case "firerouter_breaker_state":
+		case "firepoint_breaker_state":
 			s.Breakers = labeled(f, "model")
-		case "firerouter_ratelimit_rejections_total":
+		case "firepoint_ratelimit_rejections_total":
 			s.RateLimited = sumCounters(f)
-		case "firerouter_ip_rate_limit_rejections_total":
+		case "firepoint_ip_rate_limit_rejections_total":
 			s.IPLimited = sumCounters(f)
-		case "firerouter_ttft_seconds":
+		case "firepoint_ttft_seconds":
 			if len(f.Metric) > 0 && f.Metric[0].Histogram != nil {
 				h := f.Metric[0].Histogram
 				s.TTFTCount = h.GetSampleCount()
