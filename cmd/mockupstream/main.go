@@ -309,7 +309,16 @@ func (h *handler) stream(w http.ResponseWriter, r *http.Request, model string) {
 			return
 		}
 	}
+	// Usage stays where it has always been: right after the last token, with
+	// no extra wait. LiteLLM does not require it for a stream to succeed.
 	if !h.writeSSE(w, flusher, r.Context(), usageChunk(id, created, model, h.cfg.tokens)) {
+		return
+	}
+	// OpenAI chat streams end with a chunk whose finish_reason is set.
+	// LiteLLM treats a stream that never sends one as a failed connection
+	// and emits an error event. This chunk is not delayed, so the gaps
+	// between content tokens stay on the same schedule.
+	if !h.writeSSE(w, flusher, r.Context(), stopChunk(id, created, model)) {
 		return
 	}
 	h.writeSSERaw(w, flusher, r.Context(), "data: [DONE]\n\n")
@@ -483,7 +492,8 @@ func usageObject(n int) usage {
 }
 
 type delta struct {
-	Content string `json:"content"`
+	// omitempty so the final chunk's delta is {} rather than {"content":""}.
+	Content string `json:"content,omitempty"`
 }
 
 type streamChoice struct {
@@ -510,6 +520,21 @@ func tokenChunk(id string, created int64, model, content string) streamChunk {
 		Choices: []streamChoice{{
 			Index: 0,
 			Delta: &delta{Content: content},
+		}},
+	}
+}
+
+func stopChunk(id string, created int64, model string) streamChunk {
+	reason := "stop"
+	return streamChunk{
+		ID:      id,
+		Object:  "chat.completion.chunk",
+		Created: created,
+		Model:   model,
+		Choices: []streamChoice{{
+			Index:        0,
+			Delta:        &delta{},
+			FinishReason: &reason,
 		}},
 	}
 }

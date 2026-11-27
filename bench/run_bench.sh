@@ -75,9 +75,21 @@ wait_http "http://$MOCK_ADDR/healthz" "$mock_pid" "$OUT/mock.log"
 wait_http "http://$PROXY_ADDR/healthz" "$proxy_pid" "$OUT/firepoint.log"
 
 GO_VERSION=$(go version)
-CPU_MODEL=$(awk -F: '/^model name/{gsub(/^ +/, "", $2); print $2; exit}' /proc/cpuinfo)
-CORES=$(nproc)
 OS_NAME=$(uname -srm)
+case $(uname -s) in
+Darwin)
+	CPU_MODEL=$(sysctl -n machdep.cpu.brand_string)
+	CORES=$(sysctl -n hw.ncpu)
+	;;
+Linux)
+	CPU_MODEL=$(awk -F: '/^model name/{gsub(/^ +/, "", $2); print $2; exit}' /proc/cpuinfo)
+	CORES=$(nproc)
+	;;
+*)
+	CPU_MODEL=unknown
+	CORES=0
+	;;
+esac
 export GO_VERSION CPU_MODEL CORES OS_NAME OUT
 
 python3 - <<'PY'

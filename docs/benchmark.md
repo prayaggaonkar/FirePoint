@@ -44,6 +44,8 @@ The direct p50 was 200.703 ms on all five trials. The proxy p50 was 200.831 ms o
 
 The gap between tokens was about 20.6 ms on both paths. The proxy median was within one histogram step of the direct median, including two steps where the proxy number was 0.016 ms lower. That is the bucket size, not a claim that the proxy is faster.
 
+The mock now sends one more event after the last content token: a chunk with an empty delta and `finish_reason` set to `stop`, then `data: [DONE]`. That chunk is written immediately, with no extra delay. The 0.128 ms overhead in the table above was measured before the mock sent that chunk.
+
 ## Reproduce
 
 `bench/run_bench.sh` builds the binaries, starts the mock at a 200 ms first-token delay and a 20 ms interval, and runs five paired trials. Each trial is loadgen straight at the mock, then the same rate, duration, and 10 s warmup through FirePoint. One JSON file is written per trial. `bench/analyze.py` prints the median, min, and max of each percentile.

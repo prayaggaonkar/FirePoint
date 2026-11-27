@@ -75,6 +75,89 @@ func TestStreamEventsArriveOverTime(t *testing.T) {
 	}
 }
 
+func TestStreamEndsWithStopThenDone(t *testing.T) {
+	h := newHandler(config{tokens: 2})
+	ts := httptest.NewServer(h)
+	t.Cleanup(ts.Close)
+
+	resp, err := http.Post(ts.URL+"/v1/chat/completions", "application/json", strings.NewReader(`{"model":"m","stream":true}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+
+	var data []string
+	reader := bufio.NewReader(resp.Body)
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			t.Fatalf("read stream: %v", err)
+		}
+		line = strings.TrimRight(line, "\r\n")
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		data = append(data, strings.TrimPrefix(line, "data: "))
+		if data[len(data)-1] == "[DONE]" {
+			break
+		}
+	}
+	if len(data) != 5 || data[4] != "[DONE]" {
+		t.Fatalf("data lines = %#v, want two tokens, usage, stop, [DONE]", data)
+	}
+
+	type choice struct {
+		Delta        json.RawMessage `json:"delta"`
+		FinishReason *string         `json:"finish_reason"`
+	}
+	type chunk struct {
+		Choices []choice `json:"choices"`
+		Usage   *struct {
+			CompletionTokens int `json:"completion_tokens"`
+		} `json:"usage"`
+	}
+	parse := func(raw string) chunk {
+		t.Helper()
+		var got chunk
+		if err := json.Unmarshal([]byte(raw), &got); err != nil {
+			t.Fatalf("parse %s: %v", raw, err)
+		}
+		return got
+	}
+
+	for i, want := range []string{"t0", "t1"} {
+		got := parse(data[i])
+		if len(got.Choices) != 1 || got.Choices[0].FinishReason != nil {
+			t.Fatalf("token %d = %s, want one choice and finish_reason null", i, data[i])
+		}
+		var delta struct {
+			Content string `json:"content"`
+		}
+		if err := json.Unmarshal(got.Choices[0].Delta, &delta); err != nil {
+			t.Fatal(err)
+		}
+		if delta.Content != want {
+			t.Fatalf("token %d content = %q, want %s", i, delta.Content, want)
+		}
+	}
+
+	usage := parse(data[2])
+	if usage.Usage == nil || usage.Usage.CompletionTokens != 2 || len(usage.Choices) != 0 {
+		t.Fatalf("usage chunk = %s", data[2])
+	}
+
+	stop := parse(data[3])
+	if len(stop.Choices) != 1 || stop.Choices[0].FinishReason == nil || *stop.Choices[0].FinishReason != "stop" {
+		t.Fatalf("stop chunk = %s", data[3])
+	}
+	if strings.TrimSpace(string(stop.Choices[0].Delta)) != "{}" {
+		t.Fatalf("stop delta = %s, want {}", stop.Choices[0].Delta)
+	}
+}
+
 func TestFailRateReturns503(t *testing.T) {
 	h := newHandler(config{
 		firstTokenDelay: 0,
