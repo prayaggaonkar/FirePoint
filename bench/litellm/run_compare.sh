@@ -250,7 +250,7 @@ if body["scenario"] == "C":
     body["litellm_cooldown"] = {
         "num_retries": 0,
         "allowed_fails": None,
-        "rule": ">50% failures in the current minute",
+        "rule": "single deployment: 100% failures and 1000 requests in the current minute, or a non-retryable status. The 50% rule is skipped.",
         "cooldown_time_s": 5,
     }
 json.dump(body, open(os.environ["OUT"] + "/environment.json", "w"), indent=2)
@@ -484,7 +484,8 @@ PY
 		;;
 	C)
 		echo "scenario C: FirePoint breaker window 30s, min 20 samples, error threshold 0.5, open 15s, half-open probes 3."
-		echo "scenario C: LiteLLM num_retries 0, allowed_fails unset, cooldown when >50% of calls in the current minute fail, cooldown_time 5s."
+		echo "scenario C: LiteLLM num_retries 0, allowed_fails unset, cooldown_time 5s."
+		echo "scenario C: primary is one deployment, so the 50% rule does not apply. Single-deployment cooldown needs 100% failures and 1000 requests in the current minute, or a non-retryable status. 503 is retryable."
 		echo "scenario C: config-c-default-retries.yaml keeps the default of 2 retries and is not started."
 		echo "scenario C: first_5s is the first 5s of the measured window. steady is the rest. Mock counts include warmup."
 		start_mock primary

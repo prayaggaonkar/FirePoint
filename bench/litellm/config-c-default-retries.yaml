@@ -1,8 +1,8 @@
 # Labeled configuration only. run_compare.sh does not start this file.
 # It is scenario C with LiteLLM's default retry count left in place
 # (num_retries 2: two more tries of primary before fallback).
-# cooldown_time stays 5 seconds, and allowed_fails stays unset, so the
-# same >50% failures-in-the-current-minute rule applies.
+# cooldown_time stays 5 seconds, and allowed_fails stays unset. primary is
+# still one deployment, so the 50% rule does not apply to it. See config-c.yaml.
 model_list:
   - model_name: primary
     litellm_params:
