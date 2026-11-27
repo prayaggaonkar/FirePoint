@@ -1,3 +1,4 @@
 litellm=1.111.0
+prisma=0.15.0
 python=3.14.7
 go=go version go1.27.4 darwin/arm64

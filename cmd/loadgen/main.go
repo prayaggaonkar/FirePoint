@@ -37,6 +37,7 @@ func main() {
 	model := flag.String("model", "mock", "model name in the request body")
 	maxTokens := flag.Int("max-tokens", 0, "max_tokens in the request body; 0 omits the field")
 	apiKey := flag.String("api-key", os.Getenv("FIREPOINT_API_KEY"), "virtual key sent as Authorization; empty sends no key")
+	split := flag.Duration("split", 0, "also record this prefix of the measured window separately; 0 keeps one window")
 	flag.Parse()
 
 	if *rate <= 0 || *duration <= 0 || *concurrency < 1 || *warmup < 0 {
@@ -59,6 +60,7 @@ func main() {
 		Now:         time.Now,
 		APIKey:      *apiKey,
 		Body:        body,
+		Split:       *split,
 	})
 	if err != nil {
 		log.Fatal(err)

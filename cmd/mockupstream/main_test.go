@@ -158,6 +158,86 @@ func TestStreamEndsWithStopThenDone(t *testing.T) {
 	}
 }
 
+func TestPrimaryFailsImmediatelyAndIsCounted(t *testing.T) {
+	h := newHandler(config{
+		firstTokenDelay: 500 * time.Millisecond,
+		tokens:          1,
+		primary:         "primary",
+	})
+	ts := httptest.NewServer(h)
+	t.Cleanup(ts.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/v1/chat/completions", strings.NewReader(`{"model":"primary","stream":true}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("primary status = %d, want 503", resp.StatusCode)
+	}
+
+	fallback, err := http.Post(ts.URL+"/v1/chat/completions", "application/json", strings.NewReader(`{"model":"fallback","stream":true}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fallback.Body.Close()
+	body, err := io.ReadAll(fallback.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fallback.StatusCode != http.StatusOK {
+		t.Fatalf("fallback status = %d body %s", fallback.StatusCode, body)
+	}
+	if !strings.Contains(string(body), `"finish_reason":"stop"`) || !strings.Contains(string(body), "data: [DONE]") {
+		t.Fatalf("fallback stream = %s", body)
+	}
+
+	counts, err := http.Get(ts.URL + "/counts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer counts.Body.Close()
+	var got struct {
+		Models map[string]int `json:"models"`
+	}
+	if err := json.NewDecoder(counts.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Models["primary"] != 1 || got.Models["fallback"] != 1 {
+		t.Fatalf("counts = %+v", got.Models)
+	}
+
+	reset, err := http.Post(ts.URL+"/counts/reset", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reset.Body.Close()
+	if reset.StatusCode != http.StatusOK {
+		t.Fatalf("reset status = %d", reset.StatusCode)
+	}
+	again, err := http.Get(ts.URL + "/counts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer again.Body.Close()
+	var cleared struct {
+		Models map[string]int `json:"models"`
+	}
+	if err := json.NewDecoder(again.Body).Decode(&cleared); err != nil {
+		t.Fatal(err)
+	}
+	if len(cleared.Models) != 0 {
+		t.Fatalf("counts after reset = %+v", cleared.Models)
+	}
+}
+
 func TestFailRateReturns503(t *testing.T) {
 	h := newHandler(config{
 		firstTokenDelay: 0,

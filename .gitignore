@@ -33,4 +33,5 @@ keys.json
 loadgen.json
 bench/results/
 bench/litellm/results/
+bench/litellm/pg/
 __pycache__/

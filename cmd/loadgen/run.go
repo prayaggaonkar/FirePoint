@@ -40,6 +40,9 @@ type Config struct {
 	APIKey string
 	// Body is the request payload. Empty uses the default streaming chat.
 	Body []byte
+	// Split records the first part of the measured window separately from
+	// the rest. Zero keeps a single window. Error classification is unchanged.
+	Split time.Duration
 }
 
 // Percentiles is one latency distribution in milliseconds.
@@ -62,6 +65,20 @@ type Report struct {
 	Status429       int         `json:"status_429"`
 	TTFT            Percentiles `json:"ttft_ms"`
 	InterToken      Percentiles `json:"inter_token_ms"`
+	// First5s and Steady are set only when Split is positive. First5s is the
+	// opening of the measured window. Steady is the remainder.
+	SplitSeconds float64 `json:"split_seconds,omitempty"`
+	First5s      *Window `json:"first_5s,omitempty"`
+	Steady       *Window `json:"steady,omitempty"`
+}
+
+// Window is one slice of a measured run.
+type Window struct {
+	Requests   int         `json:"requests"`
+	Errors     int         `json:"errors"`
+	Status429  int         `json:"status_429"`
+	TTFT       Percentiles `json:"ttft_ms"`
+	InterToken Percentiles `json:"inter_token_ms"`
 }
 
 // Run sends streaming requests on a fixed schedule for Warmup+Duration.
@@ -82,6 +99,11 @@ func Run(ctx context.Context, cfg Config) (Report, error) {
 	ttftHist := hdrhistogram.New(histMinUs, histMaxUs, histSigs)
 	gapHist := hdrhistogram.New(histMinUs, histMaxUs, histSigs)
 	rec := &recorder{ttft: ttftHist, gaps: gapHist}
+	var earlyRec, steadyRec *recorder
+	if cfg.Split > 0 {
+		earlyRec = &recorder{ttft: hdrhistogram.New(histMinUs, histMaxUs, histSigs), gaps: hdrhistogram.New(histMinUs, histMaxUs, histSigs)}
+		steadyRec = &recorder{ttft: hdrhistogram.New(histMinUs, histMaxUs, histSigs), gaps: hdrhistogram.New(histMinUs, histMaxUs, histSigs)}
+	}
 
 	start := cfg.Now()
 	end := start.Add(cfg.Warmup + cfg.Duration)
@@ -120,10 +142,13 @@ loop:
 				break loop
 			}
 			warmup := tick.Before(warmUntil)
+			// Opening is the first Split of the measured window. The same
+			// outcome is also stored on the full-window recorder.
+			opening := earlyRec != nil && !warmup && tick.Before(warmUntil.Add(cfg.Split))
 			select {
 			case sem <- struct{}{}:
 				wg.Add(1)
-				go func(discard bool) {
+				go func(discard, opening bool) {
 					defer wg.Done()
 					defer func() { <-sem }()
 					out := doOne(reqCtx, cfg.Client, cfg.URL, cfg.APIKey, cfg.Body, cfg.Now)
@@ -131,10 +156,26 @@ loop:
 						return
 					}
 					rec.add(out)
-				}(warmup)
+					if earlyRec == nil {
+						return
+					}
+					if opening {
+						earlyRec.add(out)
+						return
+					}
+					steadyRec.add(out)
+				}(warmup, opening)
 			default:
 				if !warmup {
-					rec.add(outcome{err: errors.New("concurrency cap")})
+					miss := outcome{err: errors.New("concurrency cap")}
+					rec.add(miss)
+					if earlyRec != nil {
+						if opening {
+							earlyRec.add(miss)
+						} else {
+							steadyRec.add(miss)
+						}
+					}
 				}
 			}
 		}
@@ -153,7 +194,15 @@ loop:
 	wg.Wait()
 	close(stopped)
 
-	return rec.report(cfg), nil
+	report := rec.report(cfg)
+	if earlyRec != nil {
+		opening := earlyRec.window()
+		steady := steadyRec.window()
+		report.SplitSeconds = cfg.Split.Seconds()
+		report.First5s = &opening
+		report.Steady = &steady
+	}
+	return report, nil
 }
 
 func newClient(concurrency int) *http.Client {
@@ -281,6 +330,18 @@ func (r *recorder) add(out outcome) {
 	}
 }
 
+func (r *recorder) window() Window {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return Window{
+		Requests:   r.requests,
+		Errors:     r.errors,
+		Status429:  r.tooMany,
+		TTFT:       percentiles(r.ttft),
+		InterToken: percentiles(r.gaps),
+	}
+}
+
 func (r *recorder) report(cfg Config) Report {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -328,4 +389,16 @@ func printReport(w io.Writer, report Report) {
 		report.TTFT.P50, report.TTFT.P90, report.TTFT.P99, report.TTFT.P999)
 	fmt.Fprintf(w, "inter-token ms p50=%.3f p90=%.3f p99=%.3f p99.9=%.3f\n",
 		report.InterToken.P50, report.InterToken.P90, report.InterToken.P99, report.InterToken.P999)
+	if report.First5s != nil && report.Steady != nil {
+		printWindow(w, fmt.Sprintf("first_%.0fs", report.SplitSeconds), *report.First5s)
+		printWindow(w, "steady", *report.Steady)
+	}
+}
+
+func printWindow(w io.Writer, label string, window Window) {
+	fmt.Fprintf(w, "%s requests %d errors %d 429 %d\n", label, window.Requests, window.Errors, window.Status429)
+	fmt.Fprintf(w, "%s TTFT ms        p50=%.3f p90=%.3f p99=%.3f p99.9=%.3f\n",
+		label, window.TTFT.P50, window.TTFT.P90, window.TTFT.P99, window.TTFT.P999)
+	fmt.Fprintf(w, "%s inter-token ms p50=%.3f p90=%.3f p99=%.3f p99.9=%.3f\n",
+		label, window.InterToken.P50, window.InterToken.P90, window.InterToken.P99, window.InterToken.P999)
 }
