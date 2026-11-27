@@ -32,4 +32,5 @@ compat/js/node_modules/
 keys.json
 loadgen.json
 bench/results/
+bench/litellm/results/
 __pycache__/
