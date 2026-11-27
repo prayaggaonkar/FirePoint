@@ -1,0 +1,49 @@
+# One OpenAI-compatible model in front of mockupstream.
+# stream_once.sh listens on these same addresses.
+model_list:
+  # Name the client sends. The mock echoes whatever model it receives.
+  - model_name: bench
+    litellm_params:
+      # openai/ selects the OpenAI chat protocol. LiteLLM strips that
+      # prefix and sends "bench" to the mock.
+      model: openai/bench
+      # The mock serves /v1/chat/completions on this port.
+      api_base: http://127.0.0.1:19111/v1
+      # The mock does not check Authorization. The OpenAI client refuses
+      # to send a request when this is empty, so the value is a placeholder.
+      api_key: unused
+
+# Callbacks stay empty so nothing is copied to a logger.
+litellm_settings:
+  # Nothing runs after a successful call.
+  success_callback: []
+  # Nothing runs after a failed call.
+  failure_callback: []
+  # Nothing runs on both outcomes.
+  callbacks: []
+  # No host metrics (Datadog, Prometheus, and the like).
+  service_callback: []
+  # Keep message text out of any callback payload.
+  turn_off_message_logging: true
+  # A retry would issue a second stream and hide the first failure.
+  num_retries: 0
+
+# No database is configured. database_url is omitted so Prisma is not used.
+general_settings:
+  # This process is a local smoke test. No master key is set. Without this
+  # the proxy refuses to start.
+  dangerously_permit_weak_or_unset_master_key: true
+  # Keep model config in this file.
+  store_model_in_db: false
+  # Do not write a row per request.
+  disable_spend_logs: true
+  # Do not write error rows.
+  disable_error_logs: true
+  # Do not update stored spend for a key, user, or team.
+  disable_spend_updates: true
+
+# Read from the process environment. stream_once.sh also exports this,
+# because the admin UI is decided at import, before this file is applied.
+environment_variables:
+  # Do not mount the admin dashboard. /v1 stays up.
+  DISABLE_ADMIN_UI: "True"
