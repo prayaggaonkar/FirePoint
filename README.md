@@ -76,6 +76,10 @@ The direct p50 was 200.703 ms on all five trials. The proxy p50 was 200.831 ms o
 python3 bench/analyze.py bench/results
 ```
 
+## LiteLLM
+
+The LiteLLM 1.111.0 comparison, including the runs that did not finish, is in [docs/benchmark-litellm.md](docs/benchmark-litellm.md). `python3 bench/litellm/analyze.py` prints the tables from `bench/litellm/results`.
+
 ## Architecture
 
 ```mermaid
