@@ -104,8 +104,8 @@ func TestOpenLoopKeepsFiringWhileBusy(t *testing.T) {
 	case err := <-errCh:
 		t.Fatal(err)
 	case report := <-done:
-		if report.Errors != 4 {
-			t.Fatalf("errors = %d, want 4 cap misses while one request was in flight", report.Errors)
+		if report.Errors != 4 || report.ConcurrencyCap != 4 {
+			t.Fatalf("errors = %d cap = %d, want 4 cap misses while one request was in flight", report.Errors, report.ConcurrencyCap)
 		}
 		if report.Requests != 5 {
 			t.Fatalf("requests = %d, want 5", report.Requests)
@@ -205,6 +205,9 @@ func TestStatus429IsCountedApartFromErrors(t *testing.T) {
 	case report := <-done:
 		if report.Status429 != 1 || report.Errors != 0 {
 			t.Fatalf("429 %d errors %d", report.Status429, report.Errors)
+		}
+		if report.StatusCodes["429"] != 1 || report.StatusCodes["200"] != 1 {
+			t.Fatalf("status codes %v", report.StatusCodes)
 		}
 		if report.Requests != 2 {
 			t.Fatalf("requests %d", report.Requests)

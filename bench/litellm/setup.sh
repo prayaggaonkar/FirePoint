@@ -15,7 +15,7 @@ fi
 # prisma is the CLI LiteLLM uses to migrate the virtual-key database.
 # litellm[proxy] does not include it; that lives in the extra_proxy extra,
 # which also pulls cloud KMS and Redis clients this bench does not use.
-.venv/bin/python -m pip install --disable-pip-version-check "litellm[proxy]==1.111.0" "prisma>=0.11,<1"
+.venv/bin/python -m pip install --disable-pip-version-check "litellm[proxy]==1.111.0" "prisma>=0.11,<1" "psutil>=7,<8"
 
 # The proxy image generates this client at build time. A venv does not.
 SCHEMA=$(.venv/bin/python -c 'import litellm, pathlib; print(pathlib.Path(litellm.__file__).resolve().parent / "proxy" / "schema.prisma")')
@@ -39,6 +39,7 @@ if [[ "$LITELLM" != "1.111.0" ]]; then
 	exit 1
 fi
 PRISMA=$(.venv/bin/python -c 'import importlib.metadata as m; print(m.version("prisma"))')
+PSUTIL=$(.venv/bin/python -c 'import importlib.metadata as m; print(m.version("psutil"))')
 
 PYTHON=$(.venv/bin/python -c 'import sys; print("%d.%d.%d" % sys.version_info[:3])')
 GO_VERSION=$(cd "$ROOT" && go version)
@@ -46,6 +47,7 @@ GO_VERSION=$(cd "$ROOT" && go version)
 cat > VERSIONS.txt <<EOF
 litellm=${LITELLM}
 prisma=${PRISMA}
+psutil=${PSUTIL}
 python=${PYTHON}
 go=${GO_VERSION}
 EOF

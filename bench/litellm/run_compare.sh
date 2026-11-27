@@ -10,7 +10,11 @@
 # SCENARIO=all runs A, then B, then C.
 #
 # SMOKE=1 measures 5s once per path instead of 30s across five trials.
-# Results land in bench/litellm/results/<scenario>.
+# Scenarios A and B also sweep 100 and 200 rps. Saturation errors there are
+# recorded and do not fail the run. The 20 rps pass still fails on errors.
+# LiteLLM is started twice: workers=default (1, DEFAULT_NUM_WORKERS_LITELLM_PROXY)
+# and workers=cpu (logical CPUs). The server stays the default uvicorn path.
+# Results land in bench/litellm/results/<scenario>/<workers>/rps-<rate>.
 set -euo pipefail
 
 DIR=$(cd "$(dirname "$0")" && pwd)
@@ -31,6 +35,18 @@ LITE_ADDR=${LITELLM_PROXY_ADDR:-127.0.0.1:14011}
 BASE=${BENCH_OUT:-bench/litellm/results}
 PG_PORT=54329
 PG_DIR="$DIR/pg"
+# Documented CLI default. Passing it explicitly avoids a NUM_WORKERS value
+# inherited from the shell.
+LITE_DEFAULT_WORKERS=1
+case $(uname -s) in
+Darwin) CORES=$(sysctl -n hw.ncpu) ;;
+Linux) CORES=$(nproc) ;;
+*) CORES=0 ;;
+esac
+if [[ "$CORES" -lt 1 ]]; then
+	echo "could not read the CPU count" >&2
+	exit 1
+fi
 
 if [[ "${SMOKE:-}" == "1" ]]; then
 	RUNS=1
@@ -58,6 +74,7 @@ esac
 mock_pid=""
 fire_pid=""
 lite_pid=""
+sample_pid=""
 pg_started=0
 OUT="$BASE"
 
@@ -70,12 +87,24 @@ cleanup() {
 }
 trap cleanup EXIT
 
-stop_servers() {
+stop_litellm() {
 	if [[ -n ${lite_pid:-} ]]; then
+		# Worker processes are children. Signal them before the parent so
+		# the listen port is released.
+		pkill -P "$lite_pid" 2>/dev/null || true
 		kill "$lite_pid" 2>/dev/null || true
 		wait "$lite_pid" 2>/dev/null || true
 		lite_pid=""
 	fi
+}
+
+stop_servers() {
+	if [[ -n ${sample_pid:-} ]]; then
+		kill "$sample_pid" 2>/dev/null || true
+		wait "$sample_pid" 2>/dev/null || true
+		sample_pid=""
+	fi
+	stop_litellm
 	if [[ -n ${fire_pid:-} ]]; then
 		kill "$fire_pid" 2>/dev/null || true
 		wait "$fire_pid" 2>/dev/null || true
@@ -101,7 +130,11 @@ wait_http() {
 			return 1
 		fi
 		if curl -sf "$url" >/dev/null; then
-			return 0
+			# The curl can hit a different process that already owned the port.
+			# The child we started has to still be the one that is alive.
+			if kill -0 "$pid" 2>/dev/null; then
+				return 0
+			fi
 		fi
 		sleep 0.1
 	done
@@ -258,8 +291,20 @@ open(os.environ["OUT"] + "/environment.json", "a").write("\n")
 PY
 }
 
+ensure_free() {
+	local port=$1
+	local holders
+	holders=$(lsof -nP -iTCP:"$port" -sTCP:LISTEN 2>/dev/null || true)
+	if [[ -n "$holders" ]]; then
+		echo "port $port is already in use" >&2
+		printf '%s\n' "$holders" >&2
+		exit 1
+	fi
+}
+
 start_mock() {
 	local primary=${1:-}
+	ensure_free "${MOCK_ADDR##*:}"
 	local args=(-addr "$MOCK_ADDR" -first-token-delay 200ms -token-interval 20ms -tokens "$TOKENS")
 	if [[ -n "$primary" ]]; then
 		args+=(-primary "$primary")
@@ -270,6 +315,7 @@ start_mock() {
 }
 
 start_firepoint() {
+	ensure_free "${FIRE_ADDR##*:}"
 	local -a args=(-listen "$FIRE_ADDR" -upstream "http://$MOCK_ADDR" -rpm 1000000 -tpm 100000000)
 	if [[ -n ${1:-} ]]; then
 		args+=(-keys "$1")
@@ -284,46 +330,71 @@ start_firepoint() {
 
 start_litellm() {
 	local config=$1
-	local tries=$2
+	local workers=$2
+	local tries=$3
+	local log=$4
+	ensure_free "${LITE_ADDR##*:}"
 	# A and C must not attach to a database or a master key from the shell.
 	# B passes both in the environment. The admin UI flag is read at import.
+	# NUM_WORKERS is unset so the flag is the only worker setting.
+	# --num_workers is uvicorn's process count. Gunicorn is not selected.
 	if [[ -n ${DATABASE_URL:-} ]]; then
-		env DISABLE_ADMIN_UI=True LITELLM_LOG=ERROR \
+		env -u NUM_WORKERS DISABLE_ADMIN_UI=True LITELLM_LOG=ERROR \
 			LITELLM_MASTER_KEY="${LITELLM_MASTER_KEY:-}" \
 			DATABASE_URL="$DATABASE_URL" \
 			"$DIR/.venv/bin/litellm" \
 			--config "$config" \
 			--host 127.0.0.1 \
 			--port "${LITE_ADDR##*:}" \
-			--num_workers 1 \
-			>"$OUT/litellm.log" 2>&1 &
+			--num_workers "$workers" \
+			>"$log" 2>&1 &
 	else
-		env -u DATABASE_URL -u LITELLM_MASTER_KEY \
+		env -u DATABASE_URL -u LITELLM_MASTER_KEY -u NUM_WORKERS \
 			DISABLE_ADMIN_UI=True LITELLM_LOG=ERROR \
 			"$DIR/.venv/bin/litellm" \
 			--config "$config" \
 			--host 127.0.0.1 \
 			--port "${LITE_ADDR##*:}" \
-			--num_workers 1 \
-			>"$OUT/litellm.log" 2>&1 &
+			--num_workers "$workers" \
+			>"$log" 2>&1 &
 	fi
 	lite_pid=$!
-	wait_http "http://$LITE_ADDR/health/liveliness" "$lite_pid" "$OUT/litellm.log" "$tries"
+	wait_http "http://$LITE_ADDR/health/liveliness" "$lite_pid" "$log" "$tries"
 }
 
+# Two seconds of in-flight streams, and never below the 20 rps cap of 64.
+# A 50-token mock stream is about 1.2s, so 64 would clip 100 and 200 rps.
+concurrency_for() {
+	python3 -c 'import math,sys; rate=float(sys.argv[1]); print(max(64, math.ceil(rate * 2)))' "$1"
+}
+
+seconds_of() {
+	local value=$1
+	value=${value%s}
+	printf '%s\n' "$value"
+}
+
+# scenario model rate concurrency worker_label worker_count strict
+# strict=1 fails the run on errors. The 100 and 200 rps sweeps pass 0.
 run_trials() {
 	local scenario=$1
 	local model=$2
+	local rate=$3
+	local conc=$4
+	local workers_label=$5
+	local workers_count=$6
+	local strict=$7
+	local dest="$OUT/workers-${workers_label}/rps-${rate}"
 	local paths=(direct firepoint litellm)
-	local run start step path key
-	local -a split_args
+	local run start step path key proxy
+	mkdir -p "$dest"
 	for run in $(seq 1 "$RUNS"); do
 		start=$(( (run - 1) % 3 ))
 		order=()
 		for step in 0 1 2; do
 			order+=("${paths[$(( (start + step) % 3 ))]}")
 		done
-		echo "trial $run/$RUNS order: ${order[*]}"
+		echo "trial $run/$RUNS litellm_workers=$workers_label count=$workers_count requested_rps=$rate concurrency=$conc order: ${order[*]}"
 		for path in "${order[@]}"; do
 			if [[ "$scenario" == "C" ]]; then
 				curl -sf -X POST "http://$MOCK_ADDR/counts/reset" >/dev/null
@@ -334,57 +405,214 @@ run_trials() {
 			elif [[ "$scenario" == "B" && "$path" == "litellm" ]]; then
 				key=$LITE_KEY
 			fi
-			echo "trial $run/$RUNS $path"
+			proxy=""
+			case $path in
+			firepoint) proxy=$fire_pid ;;
+			litellm) proxy=$lite_pid ;;
+			esac
+			echo "trial $run/$RUNS $path litellm_workers=$workers_label count=$workers_count requested_rps=$rate"
+			if [[ -n "$proxy" ]]; then
+				"$DIR/.venv/bin/python" "$DIR/sample_proc.py" \
+					--pid "$proxy" \
+					--warmup "$(seconds_of "$WARMUP")" \
+					--duration "$(seconds_of "$DURATION")" \
+					--out "$dest/run-${run}-${path}.resource" &
+				sample_pid=$!
+			else
+				printf '%s\n' '{"root_pid":null,"samples":0,"process_count_max":0,"cpu_percent_median":null,"cpu_percent_max":null,"rss_bytes_median":null,"rss_bytes_max":null,"error":"direct path has no proxy process"}' \
+					>"$dest/run-${run}-${path}.resource"
+			fi
 			# A fixed argv list. An empty array under set -u is an unbound
 			# variable on the bash this machine ships.
 			cmd=(./bin/loadgen
 				-url "$(url_for "$path")"
 				-model "$model"
 				-api-key "$key"
-				-rate "$RATE"
+				-rate "$rate"
 				-duration "$DURATION"
 				-warmup "$WARMUP"
-				-concurrency "$CONCURRENCY"
-				-json "$OUT/run-${run}-${path}.tmp")
+				-concurrency "$conc"
+				-json "$dest/run-${run}-${path}.tmp")
 			if [[ "$scenario" == "C" ]]; then
 				cmd+=(-split 5s)
 			fi
 			"${cmd[@]}"
+			if [[ -n ${sample_pid:-} ]]; then
+				wait "$sample_pid" || true
+				sample_pid=""
+			fi
 			if [[ "$scenario" == "C" ]]; then
-				curl -sf "http://$MOCK_ADDR/counts" >"$OUT/run-${run}-${path}.counts"
-				report_failover "$OUT/run-${run}-${path}.tmp" "$OUT/run-${run}-${path}.counts" "$run" "$path"
-			else
-				require_clean "$OUT/run-${run}-${path}.tmp" "$run" "$path"
+				curl -sf "http://$MOCK_ADDR/counts" >"$dest/run-${run}-${path}.counts"
+			fi
+			REPORT="$dest/run-${run}-${path}.tmp" RESOURCE="$dest/run-${run}-${path}.resource" \
+				PATH_NAME="$path" WORKERS_LABEL="$workers_label" WORKERS_COUNT="$workers_count" \
+				STRICT="$strict" python3 - <<'PY'
+import json, os, sys
+report = json.load(open(os.environ["REPORT"]))
+resource = json.load(open(os.environ["RESOURCE"]))
+duration = float(report.get("duration_seconds") or 0)
+requests = int(report.get("requests") or 0)
+errors = int(report.get("errors") or 0)
+denied = int(report.get("status_429") or 0)
+ok = requests - errors - denied
+achieved = requests / duration if duration else 0
+successful = ok / duration if duration else 0
+codes = report.get("status_codes") or {}
+cap = int(report.get("concurrency_cap") or 0)
+print(
+    "throughput path={path} litellm_workers={label} count={count} "
+    "requested_rps={req} recorded_per_s={rec:.3f} successful_per_s={ok:.3f} "
+    "errors={errors} status_429={denied} status_codes={codes} error_kinds={kinds} concurrency_cap={cap}".format(
+        path=os.environ["PATH_NAME"],
+        label=os.environ["WORKERS_LABEL"],
+        count=os.environ["WORKERS_COUNT"],
+        req=report.get("rate_per_sec"),
+        rec=achieved,
+        ok=successful,
+        errors=errors,
+        denied=denied,
+        codes=json.dumps(codes, sort_keys=True),
+        kinds=json.dumps(report.get("error_kinds") or {}, sort_keys=True),
+        cap=cap,
+    )
+)
+print(
+    "resource path={path} litellm_workers={label} samples={samples} processes={procs} "
+    "cpu_percent_median={cpu_med} cpu_percent_max={cpu_max} "
+    "rss_bytes_median={rss_med} rss_bytes_max={rss_max}".format(
+        path=os.environ["PATH_NAME"],
+        label=os.environ["WORKERS_LABEL"],
+        samples=resource.get("samples"),
+        procs=resource.get("process_count_max"),
+        cpu_med=resource.get("cpu_percent_median"),
+        cpu_max=resource.get("cpu_percent_max"),
+        rss_med=resource.get("rss_bytes_median"),
+        rss_max=resource.get("rss_bytes_max"),
+    )
+)
+if resource.get("error"):
+    print("resource_note path={0} {1}".format(os.environ["PATH_NAME"], resource["error"]))
+PY
+			if [[ "$scenario" == "C" ]]; then
+				report_failover "$dest/run-${run}-${path}.tmp" "$dest/run-${run}-${path}.counts" "$run" "$path"
+			elif [[ "$strict" == "1" ]]; then
+				require_clean "$dest/run-${run}-${path}.tmp" "$run" "$path"
 			fi
 		done
-		RUN="$run" OUT="$OUT" ORDER="${order[*]}" SCENARIO_NAME="$scenario" python3 - <<'PY'
+		RUN="$run" DEST="$dest" OUT="$OUT" ORDER="${order[*]}" SCENARIO_NAME="$scenario" \
+			WORKERS_LABEL="$workers_label" WORKERS_COUNT="$workers_count" RATE_NOW="$rate" \
+			CONC_NOW="$conc" python3 - <<'PY'
 import json, os
-out = os.environ["OUT"]
+dest = os.environ["DEST"]
 run = os.environ["RUN"]
 order = os.environ["ORDER"].split()
-env = json.load(open(out + "/environment.json"))
+env = json.load(open(os.environ["OUT"] + "/environment.json"))
 body = {
     "run": int(run),
     "scenario": os.environ["SCENARIO_NAME"],
     "order": order,
+    "requested_rps": float(os.environ["RATE_NOW"]),
+    "concurrency": int(os.environ["CONC_NOW"]),
+    "litellm_workers": os.environ["WORKERS_LABEL"],
+    "litellm_worker_count": int(os.environ["WORKERS_COUNT"]),
     "environment": env,
 }
 for path in order:
-    report = json.load(open(f"{out}/run-{run}-{path}.tmp"))
-    counts = f"{out}/run-{run}-{path}.counts"
+    report = json.load(open(f"{dest}/run-{run}-{path}.tmp"))
+    report["resource"] = json.load(open(f"{dest}/run-{run}-{path}.resource"))
+    duration = float(report.get("duration_seconds") or 0)
+    requests = int(report.get("requests") or 0)
+    errors = int(report.get("errors") or 0)
+    denied = int(report.get("status_429") or 0)
+    report["recorded_per_s"] = requests / duration if duration else 0
+    report["successful_per_s"] = (requests - errors - denied) / duration if duration else 0
+    counts = f"{dest}/run-{run}-{path}.counts"
     if os.path.exists(counts):
         report["mock"] = json.load(open(counts))
     body[path] = report
-with open(f"{out}/run-{run}.json", "w") as fh:
+with open(f"{dest}/run-{run}.json", "w") as fh:
     json.dump(body, fh, indent=2)
     fh.write("\n")
 for path in order:
-    os.remove(f"{out}/run-{run}-{path}.tmp")
-    counts = f"{out}/run-{run}-{path}.counts"
+    os.remove(f"{dest}/run-{run}-{path}.tmp")
+    os.remove(f"{dest}/run-{run}-{path}.resource")
+    counts = f"{dest}/run-{run}-{path}.counts"
     if os.path.exists(counts):
         os.remove(counts)
 PY
-		echo "wrote $OUT/run-${run}.json"
+		echo "wrote $dest/run-${run}.json"
+	done
+}
+
+# One LiteLLM worker setting, then the rates for this scenario.
+# A and B sweep 20, 100, and 200. C stays at 20.
+run_worker_matrix() {
+	local scenario=$1
+	local model=$2
+	local config=$3
+	local tries=$4
+	local label count rate conc strict
+	local -a rates
+	for label in default cpu; do
+		if [[ "$label" == "default" ]]; then
+			count=$LITE_DEFAULT_WORKERS
+		else
+			count=$CORES
+		fi
+		stop_litellm
+		echo "litellm_workers label=$label count=$count"
+		echo "litellm_workers note: default is $LITE_DEFAULT_WORKERS from DEFAULT_NUM_WORKERS_LITELLM_PROXY. cpu is the logical CPU count ($CORES). uvicorn is the CLI default; gunicorn is not enabled."
+		start_litellm "$config" "$count" "$tries" "$OUT/litellm-${label}.log"
+		if [[ "$scenario" == "B" ]]; then
+			no_fire=$(http_code -H 'Content-Type: application/json' \
+				-d '{"model":"bench","messages":[{"role":"user","content":"hi"}]}' \
+				"http://$FIRE_ADDR/v1/chat/completions")
+			yes_fire=$(http_code -H "Authorization: Bearer $FP_KEY" -H 'Content-Type: application/json' \
+				-d '{"model":"bench","messages":[{"role":"user","content":"hi"}]}' \
+				"http://$FIRE_ADDR/v1/chat/completions")
+			no_lite=$(http_code -H 'Content-Type: application/json' \
+				-d '{"model":"bench","messages":[{"role":"user","content":"hi"}]}' \
+				"http://$LITE_ADDR/v1/chat/completions")
+			yes_lite=$(http_code -H "Authorization: Bearer $LITE_KEY" -H 'Content-Type: application/json' \
+				-d '{"model":"bench","messages":[{"role":"user","content":"hi"}]}' \
+				"http://$LITE_ADDR/v1/chat/completions")
+			echo "auth_check litellm_workers=$label firepoint_without_key=$no_fire firepoint_with_key=$yes_fire litellm_without_key=$no_lite litellm_with_virtual_key=$yes_lite"
+			if [[ "$no_fire" != "401" || "$yes_fire" != "200" || "$no_lite" != "401" || "$yes_lite" != "200" ]]; then
+				echo "auth check failed" >&2
+				exit 1
+			fi
+		fi
+		if [[ "$scenario" == "C" ]]; then
+			direct_code=$(http_code -H 'Content-Type: application/json' \
+				-d '{"model":"primary","messages":[{"role":"user","content":"hi"}]}' \
+				"http://$MOCK_ADDR/v1/chat/completions")
+			fire_code=$(http_code -H 'Content-Type: application/json' \
+				-d '{"model":"primary","messages":[{"role":"user","content":"hi"}]}' \
+				"http://$FIRE_ADDR/v1/chat/completions")
+			lite_code=$(http_code -H 'Content-Type: application/json' \
+				-d '{"model":"primary","messages":[{"role":"user","content":"hi"}]}' \
+				"http://$LITE_ADDR/v1/chat/completions")
+			echo "failover_check litellm_workers=$label direct=$direct_code firepoint=$fire_code litellm=$lite_code"
+			if [[ "$direct_code" != "503" || "$fire_code" != "200" || "$lite_code" != "200" ]]; then
+				echo "failover check failed: a proxy returned the primary error, or the direct path did not" >&2
+				exit 1
+			fi
+			curl -sf -X POST "http://$MOCK_ADDR/counts/reset" >/dev/null
+		fi
+		if [[ "$scenario" == "C" ]]; then
+			rates=(20)
+		else
+			rates=(20 100 200)
+		fi
+		for rate in "${rates[@]}"; do
+			conc=$(concurrency_for "$rate")
+			strict=1
+			if [[ "$scenario" != "C" && "$rate" != "20" ]]; then
+				strict=0
+			fi
+			echo "sweep scenario=$scenario litellm_workers=$label count=$count requested_rps=$rate concurrency=$conc strict=$strict"
+			run_trials "$scenario" "$model" "$rate" "$conc" "$label" "$count" "$strict"
+		done
 	done
 }
 
@@ -416,9 +644,8 @@ for scenario in "${scenarios[@]}"; do
 	A)
 		start_mock
 		start_firepoint
-		start_litellm "$DIR/config.yaml" 1200
 		write_environment A
-		run_trials A bench
+		run_worker_matrix A bench "$DIR/config.yaml" 1200
 		;;
 	B)
 		start_postgres
@@ -438,7 +665,9 @@ with open(os.environ["DEST"], "w") as fh:
 PY
 		chmod 600 "$OUT/keys.json"
 		start_firepoint "$OUT/keys.json"
-		start_litellm "$DIR/config-b.yaml" 1800
+		# The key is generated through the default worker process. The cpu
+		# worker process reads the same database row.
+		start_litellm "$DIR/config-b.yaml" "$LITE_DEFAULT_WORKERS" 1800 "$OUT/litellm-default.log"
 		key_json=$(curl -sf -X POST "http://$LITE_ADDR/key/generate" \
 			-H "Authorization: Bearer $LITELLM_MASTER_KEY" \
 			-H "Content-Type: application/json" \
@@ -472,13 +701,16 @@ PY
 		yes_lite=$(http_code -H "Authorization: Bearer $LITE_KEY" -H 'Content-Type: application/json' \
 			-d '{"model":"bench","messages":[{"role":"user","content":"hi"}]}' \
 			"http://$LITE_ADDR/v1/chat/completions")
-		echo "auth_check firepoint_without_key=$no_fire firepoint_with_key=$yes_fire litellm_without_key=$no_lite litellm_with_virtual_key=$yes_lite"
+		echo "auth_check litellm_workers=default firepoint_without_key=$no_fire firepoint_with_key=$yes_fire litellm_without_key=$no_lite litellm_with_virtual_key=$yes_lite"
 		if [[ "$no_fire" != "401" || "$yes_fire" != "200" || "$no_lite" != "401" || "$yes_lite" != "200" ]]; then
 			echo "auth check failed" >&2
 			exit 1
 		fi
 		write_environment B
-		run_trials B bench
+		# Default workers are already up for key generation. Matrix restarts
+		# them so both labels boot the same way.
+		stop_litellm
+		run_worker_matrix B bench "$DIR/config-b.yaml" 1800
 		unset LITELLM_MASTER_KEY
 		unset DATABASE_URL
 		;;
@@ -490,24 +722,8 @@ PY
 		echo "scenario C: first_5s is the first 5s of the measured window. steady is the rest. Mock counts include warmup."
 		start_mock primary
 		start_firepoint "" "$DIR/router-c.json"
-		start_litellm "$DIR/config-c.yaml" 1200
-		direct_code=$(http_code -H 'Content-Type: application/json' \
-			-d '{"model":"primary","messages":[{"role":"user","content":"hi"}]}' \
-			"http://$MOCK_ADDR/v1/chat/completions")
-		fire_code=$(http_code -H 'Content-Type: application/json' \
-			-d '{"model":"primary","messages":[{"role":"user","content":"hi"}]}' \
-			"http://$FIRE_ADDR/v1/chat/completions")
-		lite_code=$(http_code -H 'Content-Type: application/json' \
-			-d '{"model":"primary","messages":[{"role":"user","content":"hi"}]}' \
-			"http://$LITE_ADDR/v1/chat/completions")
-		echo "failover_check direct=$direct_code firepoint=$fire_code litellm=$lite_code"
-		if [[ "$direct_code" != "503" || "$fire_code" != "200" || "$lite_code" != "200" ]]; then
-			echo "failover check failed: a proxy returned the primary error, or the direct path did not" >&2
-			exit 1
-		fi
-		curl -sf -X POST "http://$MOCK_ADDR/counts/reset" >/dev/null
 		write_environment C
-		run_trials C primary
+		run_worker_matrix C primary "$DIR/config-c.yaml" 1200
 		;;
 	esac
 	stop_servers

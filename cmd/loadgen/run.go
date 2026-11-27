@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -55,16 +57,19 @@ type Percentiles struct {
 
 // Report is the measured window. Warmup attempts are not included.
 type Report struct {
-	URL             string      `json:"url"`
-	Rate            float64     `json:"rate_per_sec"`
-	DurationSeconds float64     `json:"duration_seconds"`
-	WarmupSeconds   float64     `json:"warmup_seconds"`
-	Concurrency     int         `json:"concurrency"`
-	Requests        int         `json:"requests"`
-	Errors          int         `json:"errors"`
-	Status429       int         `json:"status_429"`
-	TTFT            Percentiles `json:"ttft_ms"`
-	InterToken      Percentiles `json:"inter_token_ms"`
+	URL             string         `json:"url"`
+	Rate            float64        `json:"rate_per_sec"`
+	DurationSeconds float64        `json:"duration_seconds"`
+	WarmupSeconds   float64        `json:"warmup_seconds"`
+	Concurrency     int            `json:"concurrency"`
+	Requests        int            `json:"requests"`
+	Errors          int            `json:"errors"`
+	Status429       int            `json:"status_429"`
+	StatusCodes     map[string]int `json:"status_codes,omitempty"`
+	ErrorKinds      map[string]int `json:"error_kinds,omitempty"`
+	ConcurrencyCap  int            `json:"concurrency_cap,omitempty"`
+	TTFT            Percentiles    `json:"ttft_ms"`
+	InterToken      Percentiles    `json:"inter_token_ms"`
 	// First5s and Steady are set only when Split is positive. First5s is the
 	// opening of the measured window. Steady is the remainder.
 	SplitSeconds float64 `json:"split_seconds,omitempty"`
@@ -310,12 +315,29 @@ type recorder struct {
 	requests int
 	errors   int
 	tooMany  int
+	statuses map[string]int
+	kinds    map[string]int
+	capHits  int
 }
 
 func (r *recorder) add(out outcome) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.requests++
+	// Extra tallies. The error and 429 counts below stay the classification.
+	if out.err != nil && out.err.Error() == "concurrency cap" {
+		r.capHits++
+	} else if out.err != nil && out.status == 0 {
+		if r.kinds == nil {
+			r.kinds = map[string]int{}
+		}
+		r.kinds[out.err.Error()]++
+	} else if out.status != 0 {
+		if r.statuses == nil {
+			r.statuses = map[string]int{}
+		}
+		r.statuses[strconv.Itoa(out.status)]++
+	}
 	if out.status == http.StatusTooManyRequests {
 		r.tooMany++
 		return
@@ -354,6 +376,9 @@ func (r *recorder) report(cfg Config) Report {
 		Requests:        r.requests,
 		Errors:          r.errors,
 		Status429:       r.tooMany,
+		StatusCodes:     r.statuses,
+		ErrorKinds:      r.kinds,
+		ConcurrencyCap:  r.capHits,
 		TTFT:            percentiles(r.ttft),
 		InterToken:      percentiles(r.gaps),
 	}
@@ -384,7 +409,8 @@ func usToMs(us int64) float64 {
 }
 
 func printReport(w io.Writer, report Report) {
-	fmt.Fprintf(w, "requests %d\nerrors %d\n429 %d\n", report.Requests, report.Errors, report.Status429)
+	fmt.Fprintf(w, "requests %d\nerrors %d\n429 %d\nstatus_codes %s\nerror_kinds %s\nconcurrency_cap %d\n",
+		report.Requests, report.Errors, report.Status429, formatCodes(report.StatusCodes), formatCodes(report.ErrorKinds), report.ConcurrencyCap)
 	fmt.Fprintf(w, "TTFT ms        p50=%.3f p90=%.3f p99=%.3f p99.9=%.3f\n",
 		report.TTFT.P50, report.TTFT.P90, report.TTFT.P99, report.TTFT.P999)
 	fmt.Fprintf(w, "inter-token ms p50=%.3f p90=%.3f p99=%.3f p99.9=%.3f\n",
@@ -393,6 +419,22 @@ func printReport(w io.Writer, report Report) {
 		printWindow(w, fmt.Sprintf("first_%.0fs", report.SplitSeconds), *report.First5s)
 		printWindow(w, "steady", *report.Steady)
 	}
+}
+
+func formatCodes(codes map[string]int) string {
+	if len(codes) == 0 {
+		return "{}"
+	}
+	keys := make([]string, 0, len(codes))
+	for key := range codes {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		parts = append(parts, key+"="+strconv.Itoa(codes[key]))
+	}
+	return strings.Join(parts, ",")
 }
 
 func printWindow(w io.Writer, label string, window Window) {
