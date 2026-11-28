@@ -22,7 +22,6 @@ go.work.sum
 # Compat-suite installs
 compat/python/.venv/
 demo/.venv/
-bench/litellm/.venv/
 compat/js/node_modules/
 
 # Secrets and local config
@@ -32,6 +31,4 @@ compat/js/node_modules/
 keys.json
 loadgen.json
 bench/results/
-bench/litellm/results/
-bench/litellm/pg/
 __pycache__/

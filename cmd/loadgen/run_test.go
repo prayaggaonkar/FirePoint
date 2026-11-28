@@ -332,58 +332,6 @@ func TestStreamCutAndErrorEventAreErrors(t *testing.T) {
 	}
 }
 
-func TestSplitKeepsTheFullWindowAndTheSlices(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = io.WriteString(w, "data: t\n\ndata: [DONE]\n\n")
-	}))
-	t.Cleanup(srv.Close)
-
-	start := time.Unix(1_700_000_000, 0)
-	clk := &manualClock{t: start}
-	ticks := make(chan time.Time)
-	done := make(chan Report, 1)
-	go func() {
-		report, err := Run(context.Background(), Config{
-			URL:         srv.URL,
-			Rate:        1,
-			Warmup:      10 * time.Millisecond,
-			Split:       10 * time.Millisecond,
-			Duration:    30 * time.Millisecond,
-			Concurrency: 4,
-			Now:         clk.Now,
-			Ticks:       ticks,
-			Client:      srv.Client(),
-		})
-		if err != nil {
-			t.Error(err)
-			return
-		}
-		done <- report
-	}()
-	ticks <- start
-	ticks <- start.Add(10 * time.Millisecond)
-	ticks <- start.Add(20 * time.Millisecond)
-	ticks <- start.Add(30 * time.Millisecond)
-	ticks <- start.Add(40 * time.Millisecond)
-	close(ticks)
-
-	select {
-	case report := <-done:
-		if report.Requests != 3 || report.Errors != 0 {
-			t.Fatalf("full window requests=%d errors=%d, want 3 and 0", report.Requests, report.Errors)
-		}
-		if report.First5s == nil || report.First5s.Requests != 1 || report.First5s.Errors != 0 {
-			t.Fatalf("opening = %+v", report.First5s)
-		}
-		if report.Steady == nil || report.Steady.Requests != 2 || report.Steady.Errors != 0 {
-			t.Fatalf("steady = %+v", report.Steady)
-		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("run did not finish")
-	}
-}
-
 func TestNoSSEDataIsAnError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")

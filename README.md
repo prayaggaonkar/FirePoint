@@ -8,7 +8,7 @@ A streaming proxy for apps that call Fireworks through the OpenAI SDK and requir
 
 - Each tenant has its own request and token budget.
 - A model that starts failing is skipped, and the request goes to the next configured model.
-- Streams are flushed as each chunk arrives. On the mock benchmark, median time to first token was 0.128 ms higher through the proxy than direct.
+- Streams are flushed as each chunk arrives. On the mock benchmark, median time to first token was 0.512 ms higher through the proxy than direct.
 - One static binary. The container image is distroless and runs as nonroot.
 
 ## Demo
@@ -56,29 +56,23 @@ The proxy then calls `https://api.fireworks.ai/inference/v1/chat/completions`. T
 
 ## Benchmarks
 
-Measured 14 Nov 2026, 4:27 PM to 4:34 PM Pacific. Load generator, proxy, and mock ran on one machine, so this does not include a network hop between the tester and the proxy.
+Run on 27 Nov 2026 on an Apple M4 (10 cores, macOS Darwin 25.6.0 arm64, Go 1.27.4). Load generator, proxy, and mock ran on one machine, so this does not include a network hop.
 
-Hardware: KVM, Linux 6.12.113+, 4 vCPU `Intel(R) Xeon(R) Processor` (family 6, model 207, 1 thread per core), about 16 GB RAM, Go 1.22.2 linux/amd64.
-
-Method: the mock waits 200 ms, then sends 50 tokens 20 ms apart. Loadgen sends 20 requests per second for 30 seconds after a 10 second warmup, concurrency 64. Five direct trials and five proxy trials, alternating. Every trial recorded 600 requests, 0 errors, and 0 responses with status 429. Time to first token is send until the first `data:` line. Percentiles are from an HdrHistogram with 3 significant figures (about 0.128 ms steps near 201 ms). Overhead is the proxy median minus the direct median. Request and token budgets were raised (`-rpm 1000000 -tpm 100000000`) so a rejection would not look like proxy delay. No tenant key file was used.
+Method: the mock waits 200 ms, then sends 50 tokens 20 ms apart. Loadgen sends 20 requests per second for 30 seconds after a 10 second warmup, concurrency 64. Five direct trials and five proxy trials, alternating. Every trial recorded 600 requests, 0 errors, and 0 responses with status 429. Time to first token is send until the first `data:` line. Percentiles are from an HdrHistogram with 3 significant figures. Overhead is the proxy median minus the direct median. Rate limits were raised so a rejection would not look like proxy delay.
 
 |  | Direct median | Proxy median | Overhead |
 |---|---:|---:|---:|
-| p50 | 200.703 ms | 200.831 ms | 0.128 ms |
-| p90 | 201.343 ms | 201.471 ms | 0.128 ms |
-| p99 | 201.599 ms | 201.727 ms | 0.128 ms |
-| p99.9 | 201.599 ms | 201.855 ms | 0.256 ms |
+| p50 | 200.575 ms | 201.087 ms | 0.512 ms |
+| p90 | 200.831 ms | 201.471 ms | 0.640 ms |
+| p99 | 201.215 ms | 201.855 ms | 0.640 ms |
+| p99.9 | 201.343 ms | 202.111 ms | 0.768 ms |
 
-The direct p50 was 200.703 ms on all five trials. The proxy p50 was 200.831 ms on four trials and 200.959 ms on one. The gap between tokens was about 20.6 ms on both paths. Full notes are in [docs/benchmark.md](docs/benchmark.md).
+The p50 ranges across the five trials do not overlap (direct 200.575 to 200.703 ms, proxy 201.087 to 201.215 ms), so the overhead is real, at about half a millisecond. One proxy trial had a p99.9 of 209.535 ms. The gap between tokens was about 20.4 ms on both paths. Full notes are in [docs/benchmark.md](docs/benchmark.md).
 
 ```bash
 ./bench/run_bench.sh
 python3 bench/analyze.py bench/results
 ```
-
-## LiteLLM
-
-The LiteLLM 1.111.0 comparison, including the runs that did not finish, is in [docs/benchmark-litellm.md](docs/benchmark-litellm.md). `python3 bench/litellm/analyze.py` prints the tables from `bench/litellm/results`.
 
 ## Architecture
 
@@ -179,7 +173,7 @@ After those checks, eight streaming chats went straight to Fireworks and eight w
 
 Each side used 304 tokens. Eight calls is a sample. The direct times already spread from about 219 ms to 267 ms, so the negative difference is noise, not a claim that the proxy is faster. `GET /metrics` on that proxy process showed `firepoint_ttft_seconds` and `firepoint_proxy_overhead_seconds` at 8 observations each.
 
-Not measured live: a breaker trip, failover in the middle of a stream, and the 0.128 ms mock overhead in the table above. The mock table stays the mock result. `bench/run_bench.sh` was not pointed at Fireworks.
+Not measured live: a breaker trip, failover in the middle of a stream, and the 0.512 ms mock overhead in the table above. The mock table stays the mock result. `bench/run_bench.sh` was not pointed at Fireworks.
 
 ## Known limitations
 

@@ -26,7 +26,6 @@ func main() {
 	tokenInterval := flag.Duration("token-interval", 20*time.Millisecond, "wait between streamed tokens")
 	tokens := flag.Int("tokens", 50, "number of completion tokens to emit")
 	failRate := flag.Float64("fail-rate", 0.0, "fraction of requests that return HTTP 503")
-	primary := flag.String("primary", "", "model name that returns 503 immediately; empty disables that mode")
 	adminToken := flag.String("admin-token", "", "bearer token required by /admin; empty disables the admin API")
 	flag.Parse()
 
@@ -35,7 +34,6 @@ func main() {
 		tokenInterval:   *tokenInterval,
 		tokens:          *tokens,
 		failRate:        *failRate,
-		primary:         strings.TrimSpace(*primary),
 	})
 	h.setAdminToken(*adminToken)
 	log.Printf("mockupstream %s listening on %s", version, *addr)
@@ -47,9 +45,6 @@ type config struct {
 	tokenInterval   time.Duration
 	tokens          int
 	failRate        float64
-	// primary is a model name that fails immediately. Other names, including
-	// a fallback, keep the normal stream schedule.
-	primary string
 }
 
 // totalDelay matches the streaming schedule: one first-token wait, then an
@@ -76,10 +71,9 @@ type handler struct {
 
 	// mu guards rng and rules. math/rand is not safe for concurrent use,
 	// and a failure roll must see a stable rule list.
-	mu     sync.Mutex
-	rng    *rand.Rand
-	rules  []failRule
-	counts map[string]int
+	mu    sync.Mutex
+	rng   *rand.Rand
+	rules []failRule
 }
 
 // failRule is one live failure. Models whose name contains ModelContains
@@ -113,10 +107,6 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.embeddings(w, r)
 	case r.Method == http.MethodGet && r.URL.Path == "/v1/models":
 		h.models(w, r)
-	case r.Method == http.MethodGet && r.URL.Path == "/counts":
-		h.writeCounts(w)
-	case r.Method == http.MethodPost && r.URL.Path == "/counts/reset":
-		h.resetCounts(w)
 	case strings.HasPrefix(r.URL.Path, "/admin"):
 		h.admin(w, r)
 	default:
@@ -263,13 +253,6 @@ func (h *handler) completions(w http.ResponseWriter, r *http.Request) {
 	if req.Model == "" {
 		req.Model = "mock"
 	}
-	h.hit(req.Model)
-	// The named primary fails before any token delay so a proxy can fall
-	// back without waiting out the normal stream schedule.
-	if h.cfg.primary != "" && req.Model == h.cfg.primary {
-		writeError(w, http.StatusServiceUnavailable, "The server is overloaded or not ready yet.", "server_error")
-		return
-	}
 	if req.Stream {
 		h.stream(w, r, req.Model)
 		return
@@ -326,15 +309,13 @@ func (h *handler) stream(w http.ResponseWriter, r *http.Request, model string) {
 			return
 		}
 	}
-	// Usage stays where it has always been: right after the last token, with
-	// no extra wait. LiteLLM does not require it for a stream to succeed.
+	// Usage comes right after the last token, with no extra wait.
 	if !h.writeSSE(w, flusher, r.Context(), usageChunk(id, created, model, h.cfg.tokens)) {
 		return
 	}
-	// OpenAI chat streams end with a chunk whose finish_reason is set.
-	// LiteLLM treats a stream that never sends one as a failed connection
-	// and emits an error event. This chunk is not delayed, so the gaps
-	// between content tokens stay on the same schedule.
+	// OpenAI chat streams end with a chunk whose finish_reason is set. Strict
+	// clients treat a stream without one as truncated. This chunk is not
+	// delayed, so the gaps between content tokens stay on the same schedule.
 	if !h.writeSSE(w, flusher, r.Context(), stopChunk(id, created, model)) {
 		return
 	}
@@ -434,38 +415,7 @@ func (h *handler) ready(w http.ResponseWriter, r *http.Request) (string, bool) {
 	if req.Model == "" {
 		req.Model = "mock"
 	}
-	h.hit(req.Model)
-	if h.cfg.primary != "" && req.Model == h.cfg.primary {
-		writeError(w, http.StatusServiceUnavailable, "The server is overloaded or not ready yet.", "server_error")
-		return "", false
-	}
 	return req.Model, true
-}
-
-func (h *handler) hit(model string) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if h.counts == nil {
-		h.counts = map[string]int{}
-	}
-	h.counts[model]++
-}
-
-func (h *handler) writeCounts(w http.ResponseWriter) {
-	h.mu.Lock()
-	models := make(map[string]int, len(h.counts))
-	for name, n := range h.counts {
-		models[name] = n
-	}
-	h.mu.Unlock()
-	writeJSON(w, map[string]any{"models": models})
-}
-
-func (h *handler) resetCounts(w http.ResponseWriter) {
-	h.mu.Lock()
-	h.counts = map[string]int{}
-	h.mu.Unlock()
-	writeJSON(w, map[string]any{"models": map[string]int{}})
 }
 
 func writeJSON(w http.ResponseWriter, body any) {

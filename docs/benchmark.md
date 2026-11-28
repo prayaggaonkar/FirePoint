@@ -1,60 +1,51 @@
 # Benchmark
 
-Measured on 14 Nov 2026, 4:27 PM to 4:34 PM Pacific. The load generator, the proxy, and the mock all ran on one machine. A second machine was not available, so this number does not include a network hop between the tester and the proxy.
+Run on 27 Nov 2026. The load generator, the proxy, and the mock all ran on one machine, so the numbers do not include a network hop between the tester and the proxy.
 
-## Hardware
+## Machine
 
-- KVM virtual machine, Linux 6.12.113+
-- 4 vCPU, `Intel(R) Xeon(R) Processor`, family 6, model 207, 1 thread per core
-- `MemTotal` 16387328 kB (about 16 GB)
-- Go 1.22.2 linux/amd64
+- Apple M4, 10 cores
+- Darwin 25.6.0 arm64
+- Go 1.27.4 darwin/arm64
 
 ## Method
 
-The mock waits 200 ms before its first token, then sends 50 tokens with 20 ms between them.
+The mock waits 200 ms before its first token, then sends 50 tokens with 20 ms between them, a final chunk with `finish_reason` `stop`, and `data: [DONE]`.
 
-```bash
-./bin/mockupstream -addr 127.0.0.1:19110 -first-token-delay 200ms -token-interval 20ms -tokens 50
-./bin/firepoint -listen 127.0.0.1:18090 -upstream http://127.0.0.1:19110 -rpm 1000000 -tpm 100000000
-```
+`bench/run_bench.sh` builds the binaries, starts the mock and FirePoint with the request and token budgets raised (so a rejection is not mistaken for proxy delay and no tenant key file is used), and runs five paired trials, alternating direct and proxied. Each trial sends 20 requests per second for 30 seconds after a 10 second warmup that is thrown away, with a concurrency cap of 64. A stream lasts about 1.2 seconds, so 20 per second needs about 24 at once, under the cap.
 
-The request and token budgets were raised so a rejection would not be mistaken for proxy delay. No tenant key file was used.
-
-Each trial sends 20 requests per second for 30 seconds, after a 10 second warmup that is thrown away. The concurrency cap is 64. A stream lasts about 1.2 seconds, so 20 per second needs about 24 at once, under that cap.
-
-```bash
-./bin/loadgen -url http://127.0.0.1:19110/v1/chat/completions -rate 20 -duration 30s -warmup 10s -concurrency 64
-./bin/loadgen -url http://127.0.0.1:18090/v1/chat/completions -rate 20 -duration 30s -warmup 10s -concurrency 64
-```
-
-Direct and proxy trials alternated, five of each. Time to first token is the wait from send until the first `data:` line. The reported percentiles come from an HdrHistogram with 3 significant figures, so near 201 ms the values move in steps of about 0.128 ms. The overhead column is the proxy median minus the direct median.
-
-## Time to first token
+Time to first token is the wait from send until the first `data:` line. Percentiles come from an HdrHistogram with 3 significant figures. Delta is the proxied median minus the direct median. Min and max are across the five trials.
 
 Every trial recorded 600 requests, 0 errors, and 0 responses with status 429.
 
-|  | Direct median | Proxy median | Overhead |
-|---|---:|---:|---:|
-| p50 | 200.703 ms | 200.831 ms | 0.128 ms |
-| p90 | 201.343 ms | 201.471 ms | 0.128 ms |
-| p99 | 201.599 ms | 201.727 ms | 0.128 ms |
-| p99.9 | 201.599 ms | 201.855 ms | 0.256 ms |
+## Results
 
-The direct p50 was 200.703 ms on all five trials. The proxy p50 was 200.831 ms on four trials and 200.959 ms on one.
+| metric | percentile | direct median | direct min | direct max | proxied median | proxied min | proxied max | delta (ms) |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| TTFT | p50 | 200.575 | 200.575 | 200.703 | 201.087 | 201.087 | 201.215 | 0.512 |
+| TTFT | p90 | 200.831 | 200.703 | 200.959 | 201.471 | 201.343 | 201.599 | 0.640 |
+| TTFT | p99 | 201.215 | 201.087 | 201.343 | 201.855 | 201.599 | 201.855 | 0.640 |
+| TTFT | p99.9 | 201.343 | 201.215 | 201.471 | 202.111 | 201.727 | 209.535 | 0.768 |
+| inter-token | p50 | 20.447 | 20.447 | 20.479 | 20.447 | 20.431 | 20.479 | 0.000 |
+| inter-token | p90 | 20.895 | 20.879 | 20.927 | 20.927 | 20.895 | 20.943 | 0.032 |
+| inter-token | p99 | 21.215 | 21.199 | 21.247 | 21.279 | 21.247 | 21.295 | 0.064 |
+| inter-token | p99.9 | 21.439 | 21.343 | 21.567 | 21.583 | 21.439 | 22.015 | 0.144 |
 
-The gap between tokens was about 20.6 ms on both paths. The proxy median was within one histogram step of the direct median, including two steps where the proxy number was 0.016 ms lower. That is the bucket size, not a claim that the proxy is faster.
+## Reading the numbers
 
-The mock now sends one more event after the last content token: a chunk with an empty delta and `finish_reason` set to `stop`, then `data: [DONE]`. That chunk is written immediately, with no extra delay. The 0.128 ms overhead in the table above was measured before the mock sent that chunk.
+- The proxy adds about half a millisecond to time to first token at p50. The direct and proxied p50 ranges across trials do not overlap, so this is a real cost and not noise.
+- Inter-token spacing is the same through the proxy at p50 and within 0.144 ms at p99.9.
+- One proxied trial had a p99.9 TTFT of 209.535 ms. The other four were between 201.727 and 202.239 ms. The cause was not investigated.
 
 ## Reproduce
-
-`bench/run_bench.sh` builds the binaries, starts the mock at a 200 ms first-token delay and a 20 ms interval, and runs five paired trials. Each trial is loadgen straight at the mock, then the same rate, duration, and 10 s warmup through FirePoint. One JSON file is written per trial. `bench/analyze.py` prints the median, min, and max of each percentile.
 
 ```bash
 ./bench/run_bench.sh
 python3 bench/analyze.py bench/results
 ```
 
+Environment variables such as `BENCH_RATE` and `BENCH_DURATION` change the run; see the top of `bench/run_bench.sh`.
+
 ## What this does not show
 
-The default load-generator cap is 8 chats at once. At 100 requests per second that cap refuses most of the schedule before it is sent, and the proxy's default budget of 600 requests per minute would reject a real 100 per second after a short burst. Those knobs were opened here so the table is the extra wait on a chat that was actually served.
+This is a mock upstream on one machine, not live Fireworks. The default load-generator cap is 8 chats at once, and the proxy's default budget of 600 requests per minute would reject sustained load, so those knobs were opened here so the table is the extra wait on a chat that was actually served.
